@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <title>Overwatch — Mobile Camera</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', 'Roboto', sans-serif; background: #0a0a0a; color: #fff; min-height: 100vh; display: flex; flex-direction: column; }
+
+    .header { background: linear-gradient(135deg, #1a1a1a, #2d2d2d); padding: 1rem 1.5rem; display: flex; align-items: center; gap: 1rem; border-bottom: 2px solid #00ff00; box-shadow: 0 2px 10px rgba(0,255,0,0.3); }
+    .header h1 { font-size: 1.4rem; color: #00ff00; text-shadow: 0 0 10px rgba(0,255,0,0.5); letter-spacing: 2px; }
+    .header .sub { font-size: 0.9rem; color: #888; margin-left: auto; }
+
+    .error { background: #f00; color: #fff; padding: 0.75rem 1rem; display: none; align-items: center; justify-content: space-between; font-size: 0.9rem; }
+    .error.show { display: flex; }
+    .error button { background: none; border: none; color: #fff; font-size: 1.2rem; cursor: pointer; }
+
+    .preview { flex: 1; position: relative; background: #111; display: flex; align-items: center; justify-content: center; min-height: 300px; max-height: 60vh; overflow: hidden; }
+    .preview video { width: 100%; height: 100%; object-fit: cover; display: none; }
+    .preview .placeholder { text-align: center; color: #555; padding: 2rem; }
+    .preview .placeholder .icon { font-size: 4rem; margin-bottom: 1rem; opacity: 0.5; }
+    .preview .placeholder p { margin: 0.5rem 0; }
+    .preview .placeholder .hint { font-size: 0.8rem; color: #444; }
+
+    .live-badge { position: absolute; top: 12px; left: 12px; background: rgba(255,0,0,0.85); color: #fff; padding: 6px 14px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; display: none; align-items: center; gap: 8px; z-index: 10; }
+    .live-badge.show { display: flex; }
+    .live-badge .dot { width: 10px; height: 10px; border-radius: 50%; background: #f00; animation: blink 1s ease-in-out infinite; box-shadow: 0 0 6px rgba(255,0,0,0.8); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    .stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 4px; padding: 0.75rem; background: #1a1a1a; border-top: 1px solid #333; display: none; }
+    .stats.show { display: grid; }
+    .stats .item { text-align: center; padding: 0.5rem 0.25rem; }
+    .stats .val { display: block; font-size: 1.3rem; font-weight: bold; color: #00ff00; font-family: monospace; }
+    .stats .lbl { display: block; font-size: 0.7rem; color: #888; text-transform: uppercase; margin-top: 2px; }
+
+    .controls { display: flex; gap: 0.75rem; padding: 1rem; background: #1a1a1a; }
+    .btn { flex: 1; padding: 1rem; border: none; border-radius: 12px; font-size: 1rem; font-weight: bold; cursor: pointer; transition: all 0.2s ease; -webkit-tap-highlight-color: transparent; }
+    .btn.start { background: #00ff00; color: #000; }
+    .btn.stop { background: #f44; color: #fff; display: none; }
+    .btn.switch { background: #333; color: #fff; flex: 0.6; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn:active:not(:disabled) { transform: scale(0.98); }
+
+    .info { padding: 0.75rem 1rem; background: #111; border-top: 1px solid #222; font-size: 0.8rem; color: #666; text-align: center; }
+    .info strong { color: #00ff00; }
+    .info .ssl-warn { color: #f60; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>📱 OVERWATCH</h1>
+    <span class="sub">Mobile Camera</span>
+  </div>
+
+  <div class="error" id="error">
+    <span id="error-msg"></span>
+    <button onclick="document.getElementById('error').classList.remove('show')">✕</button>
+  </div>
+
+  <div class="preview">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="placeholder" id="placeholder">
+      <div class="icon">📷</div>
+      <p>Tap "Start Streaming" to begin</p>
+      <p class="hint">Your camera feed will be sent to the Overwatch system</p>
+    </div>
+    <div class="live-badge" id="liveBadge">
+      <span class="dot"></span>
+      <span id="liveText">LIVE</span>
+    </div>
+  </div>
+
+  <div class="stats" id="stats">
+    <div class="item"><span class="val" id="sFps">0</span><span class="lbl">FPS</span></div>
+    <div class="item"><span class="val" id="sFrames">0</span><span class="lbl">Frames</span></div>
+    <div class="item"><span class="val" id="sMB">0</span><span class="lbl">MB Sent</span></div>
+    <div class="item"><span class="val" id="sDur">0s</span><span class="lbl">Duration</span></div>
+  </div>
+
+  <div class="controls">
+    <button class="btn start" id="btnStart" onclick="startStream()">▶️ Start Streaming</button>
+    <button class="btn stop" id="btnStop" onclick="stopStream()">⏹️ Stop Streaming</button>
+    <button class="btn switch" id="btnSwitch" onclick="switchCam()" disabled>🔄 Front</button>
+  </div>
+
+  <div class="info">
+    <p>Status: <strong id="statusText">idle</strong><span id="slotInfo"></span></p>
+    <p style="font-size:0.7rem;color:#444;margin-top:4px;">
+      Same network as Overwatch server required.
+      <span id="sslWarn" class="ssl-warn" style="display:none"> ⚠️ Camera needs HTTPS.</span>
+    </p>
+  </div>
+
+  <script>
+    // Check SSL
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      document.getElementById('sslWarn').style.display = 'inline';
+    }
+
+    let ws = null, stream = null, canvas = null, ctx = null, intervalId = null;
+    let cameraId = null, isStreaming = false;
+    let facingMode = 'environment';
+    let targetFps = 15, jpegQuality = 0.5, maxWidth = 640;
+    let framesSent = 0, bytesSent = 0, startTime = 0, fpsCounter = 0, lastFpsTime = 0, currentFps = 0;
+
+    const $ = id => document.getElementById(id);
+    const video = $('video');
+
+    function showError(msg) {
+      $('error-msg').textContent = '⚠️ ' + msg;
+      $('error').classList.add('show');
+    }
+
+    function setStatus(s) {
+      $('statusText').textContent = s;
+    }
+
+    async function startStream() {
+      showError(''); $('error').classList.remove('show');
+      setStatus('initializing');
+
+      // 1. Camera access
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode, width: { ideal: maxWidth }, height: { ideal: Math.round(maxWidth * 3/4) } },
+          audio: false
+        });
+      } catch(e) {
+        showError('Camera access denied: ' + e.message);
+        setStatus('idle');
+        return;
+      }
+
+      video.srcObject = stream;
+      video.style.display = 'block';
+      $('placeholder').style.display = 'none';
+      $('btnSwitch').disabled = false;
+      setStatus('camera_ready');
+
+      // 2. Canvas
+      canvas = document.createElement('canvas');
+      ctx = canvas.getContext('2d');
+
+      // 3. WebSocket
+      try {
+        await connectWS();
+      } catch(e) {
+        showError(e.message);
+        stopStream();
+        return;
+      }
+
+      // 4. Capture loop
+      isStreaming = true;
+      startTime = Date.now();
+      lastFpsTime = Date.now();
+      framesSent = 0; bytesSent = 0; fpsCounter = 0;
+      intervalId = setInterval(captureFrame, 1000 / targetFps);
+
+      // UI
+      $('btnStart').style.display = 'none';
+      $('btnStop').style.display = 'block';
+      $('liveBadge').classList.add('show');
+      $('liveText').textContent = 'LIVE — Camera ' + cameraId;
+      $('stats').classList.add('show');
+      setStatus('streaming');
+    }
+
+    function connectWS() {
+      return new Promise((resolve, reject) => {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = proto + '//' + location.host + '/ws/camera';
+        ws = new WebSocket(url);
+        ws.binaryType = 'arraybuffer';
+
+        const timeout = setTimeout(() => { reject(new Error('Connection timeout')); ws.close(); }, 10000);
+
+        ws.onopen = () => {
+          clearTimeout(timeout);
+          ws.send(JSON.stringify({ type: 'register', role: 'camera_source', camera_id: null }));
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'registered') {
+              cameraId = msg.camera_id;
+              if (msg.target_fps) targetFps = msg.target_fps;
+              if (msg.max_width) maxWidth = msg.max_width;
+              $('slotInfo').textContent = ' • Slot: ' + cameraId;
+              resolve();
+            } else if (msg.type === 'error') {
+              reject(new Error(msg.message || 'Registration failed'));
+            }
+          } catch(ex) {}
+        };
+
+        ws.onerror = () => { clearTimeout(timeout); reject(new Error('WebSocket failed')); };
+        ws.onclose = () => {
+          if (isStreaming) { setStatus('disconnected'); stopStream(); }
+        };
+      });
+    }
+
+    function captureFrame() {
+      if (!isStreaming || !ws || ws.readyState !== 1) return;
+      if (video.readyState < 2) return;
+
+      let vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) return;
+
+      let cw = vw, ch = vh;
+      if (cw > maxWidth) { const s = maxWidth/cw; cw = Math.round(cw*s); ch = Math.round(ch*s); }
+
+      canvas.width = cw; canvas.height = ch;
+      ctx.drawImage(video, 0, 0, cw, ch);
+
+      canvas.toBlob(blob => {
+        if (!blob || !ws || ws.readyState !== 1) return;
+        blob.arrayBuffer().then(buf => {
+          ws.send(buf);
+          framesSent++; bytesSent += buf.byteLength; fpsCounter++;
+
+          const now = Date.now();
+          if (now - lastFpsTime >= 1000) {
+            currentFps = (fpsCounter / (now - lastFpsTime)) * 1000;
+            fpsCounter = 0; lastFpsTime = now;
+            updateStats();
+          }
+        });
+      }, 'image/jpeg', jpegQuality);
+    }
+
+    function updateStats() {
+      $('sFps').textContent = currentFps.toFixed(1);
+      $('sFrames').textContent = framesSent;
+      $('sMB').textContent = (bytesSent / 1024 / 1024).toFixed(1);
+      $('sDur').textContent = Math.round((Date.now() - startTime) / 1000) + 's';
+    }
+
+    function stopStream() {
+      isStreaming = false;
+      if (intervalId) { clearInterval(intervalId); intervalId = null; }
+      if (ws) {
+        try { if (ws.readyState === 1) ws.send(JSON.stringify({type:'stop'})); ws.close(); } catch(e){}
+        ws = null;
+      }
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      video.srcObject = null; video.style.display = 'none';
+      $('placeholder').style.display = '';
+      $('btnStart').style.display = 'block';
+      $('btnStop').style.display = 'none';
+      $('liveBadge').classList.remove('show');
+      $('stats').classList.remove('show');
+      $('btnSwitch').disabled = true;
+      cameraId = null;
+      $('slotInfo').textContent = '';
+      setStatus('stopped');
+    }
+
+    async function switchCam() {
+      facingMode = facingMode === 'environment' ? 'user' : 'environment';
+      $('btnSwitch').textContent = '🔄 ' + (facingMode === 'environment' ? 'Front' : 'Rear');
+
+      if (stream) {
+        stream.getTracks().forEach(t => t.stop());
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode, width: { ideal: maxWidth }, height: { ideal: Math.round(maxWidth*3/4) } },
+            audio: false
+          });
+          video.srcObject = stream;
+          await video.play();
+        } catch(e) { showError('Switch failed: ' + e.message); }
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,265 @@
+/* MobileCamera page styles — optimized for phone screens */
+
+.mobile-camera-page {
+  min-height: 100vh;
+  background: #0a0a0a;
+  color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Segoe UI', 'Roboto', sans-serif;
+}
+
+/* Header */
+.mobile-header {
+  background: linear-gradient(135deg, #1a1a1a, #2d2d2d);
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 2px solid #00ff00;
+  box-shadow: 0 2px 10px rgba(0, 255, 0, 0.3);
+}
+
+.mobile-header h1 {
+  font-size: 1.4rem;
+  color: #00ff00;
+  text-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
+  letter-spacing: 2px;
+  margin: 0;
+}
+
+.mobile-subtitle {
+  font-size: 0.9rem;
+  color: #888;
+  margin-left: auto;
+}
+
+/* Error */
+.mobile-error {
+  background: #ff0000;
+  color: #fff;
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.9rem;
+}
+
+.dismiss-btn {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 0.5rem;
+}
+
+/* Camera Preview */
+.mobile-preview-container {
+  flex: 1;
+  position: relative;
+  background: #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  max-height: 60vh;
+  overflow: hidden;
+}
+
+.mobile-video-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mobile-placeholder {
+  text-align: center;
+  color: #555;
+  padding: 2rem;
+}
+
+.placeholder-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+  opacity: 0.5;
+}
+
+.mobile-placeholder p {
+  margin: 0.5rem 0;
+  font-size: 1rem;
+}
+
+.placeholder-hint {
+  font-size: 0.8rem !important;
+  color: #444;
+}
+
+/* Streaming indicator */
+.streaming-indicator {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(255, 0, 0, 0.85);
+  color: white;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
+}
+
+.streaming-indicator.initializing {
+  background: rgba(255, 165, 0, 0.85);
+}
+
+.recording-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff0000;
+  animation: blink 1s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(255, 0, 0, 0.8);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Stats */
+.mobile-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 0.75rem;
+  background: #1a1a1a;
+  border-top: 1px solid #333;
+}
+
+.stat-item {
+  text-align: center;
+  padding: 0.5rem 0.25rem;
+}
+
+.stat-value {
+  display: block;
+  font-size: 1.3rem;
+  font-weight: bold;
+  color: #00ff00;
+  font-family: monospace;
+}
+
+.stat-label {
+  display: block;
+  font-size: 0.7rem;
+  color: #888;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+/* Controls */
+.mobile-controls {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: #1a1a1a;
+}
+
+.mobile-btn {
+  flex: 1;
+  padding: 1rem;
+  border: none;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.start-btn {
+  background: #00ff00;
+  color: #000;
+}
+
+.start-btn:hover, .start-btn:active {
+  background: #00cc00;
+  transform: scale(0.98);
+}
+
+.stop-btn {
+  background: #ff4444;
+  color: #fff;
+}
+
+.stop-btn:hover, .stop-btn:active {
+  background: #cc0000;
+  transform: scale(0.98);
+}
+
+.switch-btn {
+  background: #333;
+  color: #fff;
+  flex: 0.6;
+}
+
+.switch-btn:hover:not(:disabled), .switch-btn:active:not(:disabled) {
+  background: #555;
+}
+
+.switch-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Info */
+.mobile-info {
+  padding: 0.75rem 1rem;
+  background: #111;
+  border-top: 1px solid #222;
+  font-size: 0.8rem;
+  color: #666;
+  text-align: center;
+}
+
+.mobile-info p {
+  margin: 0.25rem 0;
+}
+
+.mobile-info strong {
+  color: #00ff00;
+}
+
+.mobile-info-hint {
+  font-size: 0.7rem !important;
+  color: #444;
+}
+
+.ssl-warning {
+  color: #ff6600;
+  font-weight: bold;
+}
+
+/* Make sure video fills properly on mobile */
+@media (max-width: 480px) {
+  .mobile-header h1 {
+    font-size: 1.2rem;
+  }
+
+  .mobile-stats {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .stat-value {
+    font-size: 1.1rem;
+  }
+
+  .mobile-btn {
+    padding: 0.85rem;
+    font-size: 0.9rem;
+  }
+}

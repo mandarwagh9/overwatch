@@ -1,0 +1,54 @@
+# =============================================================================
+# Jetson Orin Nano — requirements (JetPack 6.x / L4T)
+# =============================================================================
+#
+# IMPORTANT: Do NOT pip-install torch / torchvision from PyPI on Jetson.
+# Use the pre-built NVIDIA wheels that match your JetPack version:
+#
+#   pip install torch     — from https://developer.nvidia.com/embedded/downloads
+#   pip install torchvision — build from source or use NVIDIA's matching .whl
+#
+# Example (JetPack 6.0 / L4T R36.x):
+#   pip install https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.3.0a0+ebedce2.nv24.02-cp310-cp310-linux_aarch64.whl
+#
+# After installing torch with CUDA, export TensorRT engine:
+#   yolo export model=yolov8n.pt format=engine half=True imgsz=640 device=0
+#
+# Then set in .env or config:
+#   MODEL_PATH=yolov8n.engine
+#   HALF_PRECISION=true
+#   DEVICE=cuda:0
+# =============================================================================
+
+# Core FastAPI and web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+websockets==12.0
+
+# Computer Vision and ML
+opencv-python-headless==4.8.1.78
+ultralytics>=8.0.196
+
+# NOTE: torch and torchvision come from JetPack / NVIDIA wheels (see above)
+# Do NOT uncomment these lines on Jetson:
+# torch==2.1.1+cpu
+# torchvision==0.16.1+cpu
+
+# NOTE: onnxruntime not needed — Jetson uses TensorRT natively via ultralytics
+# onnxruntime==1.16.3
+
+# Tracking and detection
+deep-sort-realtime==1.3.2
+
+# Data processing and serialization
+numpy==1.24.3
+msgpack==1.0.7
+pydantic==2.4.2
+pydantic-settings==2.0.3
+
+# Async and concurrency
+aiofiles==23.2.1
+
+# Utilities
+python-multipart==0.0.6
+python-dotenv==1.0.0
