@@ -42,6 +42,7 @@ class Track:
     velocity: Tuple[float, float] = (0.0, 0.0)  # dx, dy per frame
     predicted_position: Optional[Tuple[float, float]] = None
     feature_vector: object = None  # appearance descriptor (np.ndarray)
+    keypoints: Optional[list] = None  # COCO 17-joint skeleton (x, y, conf)
 
 
 @dataclass
@@ -117,6 +118,7 @@ class SimpleTracker:
                     time_since_update=0,
                     velocity=velocity,
                     feature_vector=detection.feature_vector,
+                    keypoints=detection.keypoints,
                 )
                 
                 self.tracks[track_id] = updated_track
@@ -169,6 +171,7 @@ class SimpleTracker:
                     hits=1,
                     time_since_update=0,
                     feature_vector=detection.feature_vector,
+                    keypoints=detection.keypoints,
                 )
                 
                 self.tracks[self.next_track_id] = new_track
@@ -268,6 +271,7 @@ class HungarianTracker:
             class_name=det.class_name, age=track.age + 1,
             hits=track.hits + 1, time_since_update=0,
             velocity=vel, feature_vector=det.feature_vector,
+            keypoints=det.keypoints,
         )
         self.tracks[track.track_id] = upd
         return upd
@@ -301,6 +305,7 @@ class HungarianTracker:
             confidence=det.confidence, class_id=det.class_id,
             class_name=det.class_name, age=1, hits=1,
             time_since_update=0, feature_vector=det.feature_vector,
+            keypoints=det.keypoints,
         )
         self.tracks[tid] = nt
         return nt

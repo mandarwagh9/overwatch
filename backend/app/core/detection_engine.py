@@ -36,6 +36,7 @@ class Detection:
     class_name: str
     center: Tuple[float, float]  # x, y center point
     feature_vector: object = None  # appearance descriptor (np.ndarray or None)
+    keypoints: Optional[List[Tuple[float, float, float]]] = None  # COCO 17-joint (x, y, conf)
 
 
 @dataclass
@@ -180,19 +181,36 @@ class YOLODetector:
             
             detections = []
             
+            # Check if model provides keypoints (YOLOv8-pose)
+            _pose_available = settings.pose_enabled
+            
             for result in results:
                 if result.boxes is not None:
                     boxes = result.boxes.xyxy.cpu().numpy()
                     confidences = result.boxes.conf.cpu().numpy()
                     classes = result.boxes.cls.cpu().numpy().astype(int)
                     
-                    for box, conf, cls_id in zip(boxes, confidences, classes):
+                    # Extract keypoints tensor if available: (N, 17, 3)
+                    kp_data = None
+                    if _pose_available and hasattr(result, 'keypoints') and result.keypoints is not None:
+                        try:
+                            kp_data = result.keypoints.data.cpu().numpy()
+                        except Exception:
+                            kp_data = None
+                    
+                    for idx, (box, conf, cls_id) in enumerate(zip(boxes, confidences, classes)):
                         x1, y1, x2, y2 = box
                         center_x = (x1 + x2) / 2
                         center_y = (y1 + y2) / 2
                         
                         # Compute lightweight appearance descriptor
                         feat = self._compute_appearance_feature(frame, (x1, y1, x2, y2))
+                        
+                        # Per-person keypoints: list of (x, y, conf) tuples
+                        kpts = None
+                        if kp_data is not None and idx < kp_data.shape[0]:
+                            person_kp = kp_data[idx]  # (17, 3)
+                            kpts = [(float(person_kp[j, 0]), float(person_kp[j, 1]), float(person_kp[j, 2])) for j in range(person_kp.shape[0])]
                         
                         detection = Detection(
                             bbox=(float(x1), float(y1), float(x2), float(y2)),
@@ -201,6 +219,7 @@ class YOLODetector:
                             class_name=self.class_names.get(cls_id, 'person'),
                             center=(float(center_x), float(center_y)),
                             feature_vector=feat,
+                            keypoints=kpts,
                         )
                         detections.append(detection)
             

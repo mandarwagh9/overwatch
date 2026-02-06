@@ -1,8 +1,28 @@
 /**
- * Camera display component with AR overlays
+ * Camera display component with AR overlays + COCO skeleton stick-figure renderer
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+
+// ── COCO Skeleton Topology ──────────────────────────────────────────────
+// 17 keypoints: nose(0), left_eye(1), right_eye(2), left_ear(3), right_ear(4),
+// left_shoulder(5), right_shoulder(6), left_elbow(7), right_elbow(8),
+// left_wrist(9), right_wrist(10), left_hip(11), right_hip(12),
+// left_knee(13), right_knee(14), left_ankle(15), right_ankle(16)
+const COCO_SKELETON = [
+  [0, 1], [0, 2], [1, 3], [2, 4],           // head
+  [5, 6],                                     // shoulders
+  [5, 7], [7, 9],                             // left arm
+  [6, 8], [8, 10],                            // right arm
+  [5, 11], [6, 12],                           // torso
+  [11, 12],                                   // hips
+  [11, 13], [13, 15],                         // left leg
+  [12, 14], [14, 16],                         // right leg
+  [0, 5], [0, 6],                             // nose → shoulders (neck approx)
+  [3, 5], [4, 6],                             // ears → shoulders (optional)
+];
+
+const KP_CONF_THRESHOLD = 0.25; // minimum joint confidence to draw
 
 const CameraDisplay = ({ 
   cameraId, 
@@ -32,6 +52,47 @@ const CameraDisplay = ({
     });
   }, [detections, tracks, predictions]);
 
+  // ── Skeleton stick-figure drawer ─────────────────────────────────────
+  const drawSkeleton = useCallback((ctx, keypoints, color, lineWidth, ghost = false) => {
+    if (!keypoints || keypoints.length < 17) return;
+
+    ctx.save();
+
+    if (ghost) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 14;
+      ctx.setLineDash([6, 4]);
+    }
+
+    // Draw limb bones
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    COCO_SKELETON.forEach(([i, j]) => {
+      const a = keypoints[i];
+      const b = keypoints[j];
+      if (!a || !b) return;
+      if (a[2] < KP_CONF_THRESHOLD || b[2] < KP_CONF_THRESHOLD) return;
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    });
+
+    // Draw joint dots
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+    keypoints.forEach(kp => {
+      if (!kp || kp[2] < KP_CONF_THRESHOLD) return;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(kp[0], kp[1], ghost ? 4 : 3, 0, 2 * Math.PI);
+      ctx.fill();
+    });
+
+    ctx.restore();
+  }, []);
+
   // Draw overlays on canvas
   const drawOverlays = useCallback(() => {
     const canvas = canvasRef.current;
@@ -40,7 +101,7 @@ const CameraDisplay = ({
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw detections — clean tactical-style PERSON boxes
+    // ── Phase 1: Detections — cyan brackets + optional skeleton ──────
     detections.forEach(detection => {
       const [x1, y1, x2, y2] = detection.bbox;
       const w = x2 - x1;
@@ -50,6 +111,7 @@ const CameraDisplay = ({
       // Subtle full bounding box
       ctx.strokeStyle = 'rgba(0, 255, 200, 0.35)';
       ctx.lineWidth = 1;
+      ctx.setLineDash([]);
       ctx.strokeRect(x1, y1, w, h);
 
       // Corner accent brackets (bright cyan)
@@ -82,12 +144,18 @@ const CameraDisplay = ({
       ctx.lineTo(x2, y2 - cornerLen);
       ctx.stroke();
 
+      // Skeleton overlay (cyan) if keypoints available
+      if (detection.keypoints && detection.keypoints.length >= 17) {
+        drawSkeleton(ctx, detection.keypoints, '#00ffc8', 2, false);
+      }
+
       // Center crosshair marker
       const cx = (x1 + x2) / 2;
       const cy = (y1 + y2) / 2;
       const crossSize = 7;
       ctx.strokeStyle = 'rgba(0, 255, 200, 0.6)';
       ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(cx - crossSize, cy);
       ctx.lineTo(cx + crossSize, cy);
@@ -135,10 +203,11 @@ const CameraDisplay = ({
       ctx.fillText(label, pillX + pillPad, pillY + 14);
     });
 
-    // Draw tracks (yellow boxes with trail)
+    // ── Phase 2: Tracks — yellow box + optional skeleton ─────────────
     ctx.strokeStyle = '#ffff00';
     ctx.lineWidth = 3;
     ctx.fillStyle = 'rgba(255, 255, 0, 0.15)';
+    ctx.setLineDash([]);
 
     tracks.forEach(track => {
       const [x1, y1, x2, y2] = track.bbox;
@@ -146,8 +215,15 @@ const CameraDisplay = ({
       const height = y2 - y1;
 
       // Draw bounding box
+      ctx.strokeStyle = '#ffff00';
+      ctx.lineWidth = 3;
       ctx.strokeRect(x1, y1, width, height);
-      
+
+      // Skeleton overlay (yellow) if keypoints available
+      if (track.keypoints && track.keypoints.length >= 17) {
+        drawSkeleton(ctx, track.keypoints, '#ffff00', 2, false);
+      }
+
       // Draw center point
       const centerX = (x1 + x2) / 2;
       const centerY = (y1 + y2) / 2;
@@ -159,7 +235,7 @@ const CameraDisplay = ({
       // Draw velocity vector
       if (track.velocity) {
         const [vx, vy] = track.velocity;
-        const scale = 10; // Scale factor for visualization
+        const scale = 10;
         ctx.strokeStyle = '#ffff00';
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -190,67 +266,96 @@ const CameraDisplay = ({
       ctx.fillText(`Track ${track.track_id}`, x1, y1 - 5);
     });
 
-    // Draw predictions (red dashed boxes with ghost effect). Style predicted vs observed differently.
-    ctx.setLineDash([5, 5]);
-    ctx.lineWidth = 2;
-
+    // ── Phase 3: Predictions / Ghost overlays ─────────────────────────
     predictions.forEach(prediction => {
       const [x1, y1, x2, y2] = prediction.bbox;
       const width = x2 - x1;
       const height = y2 - y1;
-
-      const isInferred = !!prediction.inferred;
-
-      if (isInferred) {
-        // Ghosted inferred overlay
-        ctx.strokeStyle = 'rgba(255, 100, 100, 0.9)';
-        ctx.fillStyle = 'rgba(255, 100, 100, 0.08)';
-      } else {
-        // Stronger visible prediction (should be rare)
-        ctx.strokeStyle = 'rgba(255, 0, 0, 0.95)';
-        ctx.fillStyle = 'rgba(255, 0, 0, 0.12)';
-      }
-
-      // Draw dashed bounding box and fill
-      ctx.strokeRect(x1, y1, width, height);
-      ctx.fillRect(x1, y1, width, height);
-
-      // Draw prediction center with pulsing effect for inferred
       const centerX = (x1 + x2) / 2;
       const centerY = (y1 + y2) / 2;
-      const pulse = Math.sin(Date.now() / 200) * 0.3 + 0.7;
+      const hasKeypoints = prediction.keypoints && prediction.keypoints.length >= 17;
+      const srcCam = prediction.source_camera ?? -1;
 
-      ctx.beginPath();
-      if (isInferred) {
-        ctx.fillStyle = `rgba(255, 100, 100, ${pulse * 0.9})`;
-        ctx.arc(centerX, centerY, 6, 0, 2 * Math.PI);
+      if (hasKeypoints) {
+        // ─── GHOST SKELETON MODE ───────────────────────────────
+        // Render the stick figure as a glowing cyan ghost
+        drawSkeleton(ctx, prediction.keypoints, 'rgba(0, 220, 255, 0.85)', 3, true);
+
+        // Ghost label: "GHOST — seen by Cam X"
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.shadowBlur = 0;
+        const ghostLabel = srcCam >= 0
+          ? `GHOST — seen by Cam ${srcCam}`
+          : `GHOST — inferred`;
+        ctx.font = 'bold 11px "Courier New", monospace';
+        const tw = ctx.measureText(ghostLabel).width;
+        const lx = centerX - tw / 2 - 6;
+        const ly = y1 - 26;
+
+        // Label background
+        ctx.fillStyle = 'rgba(0, 220, 255, 0.75)';
+        ctx.beginPath();
+        const r = 3;
+        const lw = tw + 12;
+        const lh = 20;
+        ctx.moveTo(lx + r, ly);
+        ctx.lineTo(lx + lw - r, ly);
+        ctx.quadraticCurveTo(lx + lw, ly, lx + lw, ly + r);
+        ctx.lineTo(lx + lw, ly + lh - r);
+        ctx.quadraticCurveTo(lx + lw, ly + lh, lx + lw - r, ly + lh);
+        ctx.lineTo(lx + r, ly + lh);
+        ctx.quadraticCurveTo(lx, ly + lh, lx, ly + lh - r);
+        ctx.lineTo(lx, ly + r);
+        ctx.quadraticCurveTo(lx, ly, lx + r, ly);
+        ctx.closePath();
         ctx.fill();
+
+        // Label text
+        ctx.fillStyle = '#000';
+        ctx.fillText(ghostLabel, lx + 6, ly + 14);
+
+        // Confidence + age below skeleton
+        const infoLabel = `${(prediction.confidence * 100).toFixed(0)}% · ${prediction.time_since_seen.toFixed(1)}s ago`;
+        ctx.fillStyle = 'rgba(0, 220, 255, 0.7)';
+        ctx.font = '10px "Courier New", monospace';
+        ctx.fillText(infoLabel, centerX - ctx.measureText(infoLabel).width / 2, y2 + 14);
+        ctx.restore();
       } else {
-        ctx.fillStyle = `rgba(255, 0, 0, ${pulse})`;
+        // ─── FALLBACK: Red dashed box (no keypoints) ───────────
+        ctx.save();
+        ctx.setLineDash([5, 5]);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(255, 100, 100, 0.9)';
+        ctx.fillStyle = 'rgba(255, 100, 100, 0.08)';
+        ctx.strokeRect(x1, y1, width, height);
+        ctx.fillRect(x1, y1, width, height);
+
+        // Pulsing center dot
+        const pulse = Math.sin(Date.now() / 200) * 0.3 + 0.7;
+        ctx.fillStyle = `rgba(255, 100, 100, ${pulse * 0.9})`;
+        ctx.beginPath();
         ctx.arc(centerX, centerY, 6, 0, 2 * Math.PI);
         ctx.fill();
+
+        // Info label
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(255, 100, 100, 0.9)';
+        ctx.fillRect(x1, y1 - 35, 140, 30);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '12px Arial';
+        const predLabel = `Predicted ${(prediction.confidence * 100).toFixed(0)}%`;
+        const timeLabel = `${prediction.time_since_seen.toFixed(1)}s ago`;
+        ctx.fillText(predLabel, x1 + 4, y1 - 20);
+        ctx.fillText(timeLabel, x1 + 4, y1 - 8);
+        ctx.restore();
       }
-
-      // Draw confidence and time info
-      ctx.setLineDash([]); // Reset line dash
-      ctx.fillStyle = isInferred ? 'rgba(255, 100, 100, 0.9)' : 'rgba(255, 0, 0, 0.9)';
-      ctx.font = '12px Arial';
-      const predLabel = `${isInferred ? 'Predicted' : 'Pred'} ${(prediction.confidence * 100).toFixed(0)}%`;
-      const timeLabel = `${prediction.time_since_seen.toFixed(1)}s ago`;
-
-      ctx.fillRect(x1, y1 - 35, 140, 30);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(predLabel, x1 + 4, y1 - 20);
-      ctx.fillText(timeLabel, x1 + 4, y1 - 8);
-
-      // Restore dashed setting for next prediction
-      ctx.setLineDash([5, 5]);
     });
 
     // Reset line dash
     ctx.setLineDash([]);
 
-  }, [detections, tracks, predictions]);
+  }, [detections, tracks, predictions, drawSkeleton]);
 
   // Handle frame data update
   useEffect(() => {

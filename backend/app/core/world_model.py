@@ -40,6 +40,7 @@ class WorldObject:
     position_uncertainty: Tuple[float, float, float] = (1.0, 1.0, 1.0)  # from KF P diagonal
     bbox_size: Tuple[float, float] = (0.0, 0.0)  # last known w, h in pixels
     feature_vector: object = None  # appearance descriptor for cross-camera re-ID (np.ndarray)
+    keypoints: Optional[list] = None  # COCO 17-joint skeleton (x, y, conf)
 
 
 @dataclass
@@ -52,6 +53,8 @@ class PredictedTarget:
     confidence: float
     time_since_seen: float
     velocity_projection: Tuple[float, float]
+    source_camera: int = -1  # camera that actually sees this person
+    keypoints: Optional[list] = None  # projected COCO skeleton for ghost overlay
 
 
 class CoordinateTransform:
@@ -409,6 +412,11 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
     # Update bbox size
     obj.bbox_size = (float(track.bbox[2] - track.bbox[0]), float(track.bbox[3] - track.bbox[1]))
 
+    # Update keypoints (store latest skeleton)
+    kp = getattr(track, 'keypoints', None)
+    if kp is not None:
+        obj.keypoints = kp
+
     # Update appearance feature (exponential moving average for re-ID stability)
     fv = getattr(track, 'feature_vector', None)
     if fv is not None:
@@ -446,6 +454,7 @@ async def _wm_create_new_object(self, track_key: Tuple[int, int], track, world_p
         source_tracks={track.camera_id: track.track_id},
         bbox_size=(float(track.bbox[2] - track.bbox[0]), float(track.bbox[3] - track.bbox[1])),
         feature_vector=getattr(track, 'feature_vector', None),
+        keypoints=getattr(track, 'keypoints', None),
     )
     
     self.world_objects[object_id] = new_object
@@ -557,17 +566,24 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
         if (0 <= predicted_pixel[0] <= settings.frame_width and 
             0 <= predicted_pixel[1] <= settings.frame_height):
             
-            # Create predicted bounding box (simplified)
-            box_size = 100  # pixels
+            # Use stored bbox size instead of hardcoded 100px
+            bw, bh = obj.bbox_size if obj.bbox_size != (0.0, 0.0) else (100.0, 100.0)
             predicted_bbox = (
-                predicted_pixel[0] - box_size/2,
-                predicted_pixel[1] - box_size/2,
-                predicted_pixel[0] + box_size/2,
-                predicted_pixel[1] + box_size/2
+                predicted_pixel[0] - bw / 2,
+                predicted_pixel[1] - bh / 2,
+                predicted_pixel[0] + bw / 2,
+                predicted_pixel[1] + bh / 2
             )
             
             # Calculate confidence decay
             confidence = obj.confidence * max(0.1, 1.0 - time_since_seen / self.prediction_horizon)
+            
+            # Project keypoints from source camera to target camera view
+            projected_kp = None
+            if obj.keypoints is not None and len(obj.keypoints) > 0:
+                projected_kp = _project_keypoints_to_camera(
+                    obj.keypoints, obj.bbox_size, predicted_pixel, (bw, bh)
+                )
             
             prediction = PredictedTarget(
                 object_id=object_id,
@@ -576,7 +592,9 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
                 predicted_center=predicted_pixel,
                 confidence=confidence,
                 time_since_seen=time_since_seen,
-                velocity_projection=(obj.velocity[0], obj.velocity[1])
+                velocity_projection=(obj.velocity[0], obj.velocity[1]),
+                source_camera=obj.last_seen_camera,
+                keypoints=projected_kp,
             )
             
             predictions.append(prediction)
@@ -602,6 +620,43 @@ def _wm_get_stats(self) -> dict:
         'coordinate_transforms': self.stats['coordinate_transforms'],
         'active_cameras': len(set(obj.last_seen_camera for obj in self.world_objects.values()))
     }
+
+
+def _project_keypoints_to_camera(src_kps: list, src_bbox_size: Tuple[float, float],
+                                   target_center: Tuple[float, float],
+                                   target_bbox_size: Tuple[float, float]) -> list:
+    """Project keypoints from source camera view onto the predicted position.
+
+    Uses relative-offset approach:
+      1. Compute each joint's offset from the source bbox center in normalised coords
+      2. Apply same offset around the predicted center in the target view, scaled by
+         the target bbox size.
+    This avoids needing per-joint 3D reconstruction.
+    """
+    sw, sh = max(src_bbox_size[0], 1.0), max(src_bbox_size[1], 1.0)
+    tw, th = max(target_bbox_size[0], 1.0), max(target_bbox_size[1], 1.0)
+
+    # Compute source bbox center from keypoints with confidence > 0.3
+    vis = [(kp[0], kp[1]) for kp in src_kps if kp[2] > 0.3]
+    if not vis:
+        return None
+    src_cx = sum(p[0] for p in vis) / len(vis)
+    src_cy = sum(p[1] for p in vis) / len(vis)
+
+    projected = []
+    for kp in src_kps:
+        x, y, conf = kp
+        if conf < 0.05:
+            projected.append((0.0, 0.0, 0.0))
+            continue
+        # Normalised offset relative to source bbox
+        nx = (x - src_cx) / sw
+        ny = (y - src_cy) / sh
+        # Reconstruct in target view
+        tx = target_center[0] + nx * tw
+        ty = target_center[1] + ny * th
+        projected.append((float(tx), float(ty), float(conf)))
+    return projected
 
 
 # Attach all methods to WorldModel

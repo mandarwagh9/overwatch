@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     mobile_camera_quality: int = 50  # JPEG quality for mobile re-encoding
     mobile_camera_max_width: int = 640  # Max frame width from mobile
     
+    # Pose estimation (skeleton overlays for collaborative perception)
+    pose_enabled: bool = True  # Extract COCO keypoints when model supports it
+    
     # Authentication
     jwt_secret: str = "overwatch-jwt-secret-change-in-production"
     jwt_algorithm: str = "HS256"

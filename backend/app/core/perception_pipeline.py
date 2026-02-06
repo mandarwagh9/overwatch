@@ -239,17 +239,20 @@ class PerceptionPipeline:
 # ── Module-level serialization helpers ─────────────────────────────────
 
 def _ser_det(det) -> dict:
-    return {
+    d = {
         'bbox': det.bbox,
         'confidence': det.confidence,
         'class_id': det.class_id,
         'class_name': det.class_name,
         'center': det.center,
     }
+    if det.keypoints is not None:
+        d['keypoints'] = det.keypoints
+    return d
 
 
 def _ser_track(track) -> dict:
-    return {
+    d = {
         'track_id': track.track_id,
         'bbox': track.bbox,
         'center': track.center,
@@ -261,10 +264,13 @@ def _ser_track(track) -> dict:
         'velocity': track.velocity,
         'predicted_position': track.predicted_position,
     }
+    if track.keypoints is not None:
+        d['keypoints'] = track.keypoints
+    return d
 
 
 def _ser_pred(pred) -> dict:
-    return {
+    d = {
         'object_id': pred.object_id,
         'bbox': pred.predicted_bbox,
         'center': pred.predicted_center,
@@ -273,4 +279,8 @@ def _ser_pred(pred) -> dict:
         'velocity_projection': pred.velocity_projection,
         'type': 'prediction',
         'inferred': True,
+        'source_camera': getattr(pred, 'source_camera', -1),
     }
+    if pred.keypoints is not None:
+        d['keypoints'] = pred.keypoints
+    return d
