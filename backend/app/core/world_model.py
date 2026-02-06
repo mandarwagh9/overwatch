@@ -41,6 +41,11 @@ class WorldObject:
     bbox_size: Tuple[float, float] = (0.0, 0.0)  # last known w, h in pixels
     feature_vector: object = None  # appearance descriptor for cross-camera re-ID (np.ndarray)
     keypoints: Optional[list] = None  # COCO 17-joint skeleton (x, y, conf)
+    # Per-camera pixel-space tracking (essential for uncalibrated camera prediction)
+    camera_pixel_positions: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+    camera_pixel_velocities: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+    camera_bbox_sizes: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+    camera_keypoints: Dict[int, list] = field(default_factory=dict)
 
 
 @dataclass
@@ -315,6 +320,24 @@ async def _wm_update_with_tracking_results(self, tracking_results: List[Tracking
     for tracking_result in tracking_results:
         await self._process_camera_tracks(tracking_result, current_time)
     
+    # ── Clean stale source_tracks entries ───────────────────────────
+    # Build set of active (camera_id, track_id) pairs from this tick
+    active_track_keys = set()
+    cameras_reporting = set()
+    for tr in tracking_results:
+        cameras_reporting.add(tr.camera_id)
+        for t in tr.tracks:
+            active_track_keys.add((tr.camera_id, t.track_id))
+    
+    # For each world object, remove source_track entries where the camera
+    # reported tracks this tick but the specific track_id is gone (lost tracking)
+    for obj in self.world_objects.values():
+        stale = [cam_id for cam_id in obj.source_tracks
+                 if cam_id in cameras_reporting
+                 and (cam_id, obj.source_tracks[cam_id]) not in active_track_keys]
+        for cam_id in stale:
+            del obj.source_tracks[cam_id]
+    
     # Clean up old objects
     self._cleanup_old_objects(current_time)
     
@@ -347,7 +370,7 @@ async def _wm_process_camera_tracks(self, tracking_result: TrackingResult, curre
         else:
             # Check for nearby objects that might be the same (cross-camera re-ID)
             fv = getattr(track, 'feature_vector', None)
-            object_id = self._find_matching_object(world_pos, track.class_id, current_time, feature_vector=fv)
+            object_id = self._find_matching_object(world_pos, track.class_id, current_time, feature_vector=fv, camera_id=camera_id)
             if object_id:
                 self.track_to_object_mapping[track_key] = object_id
                 await self._update_existing_object(object_id, track, world_pos, current_time)
@@ -412,10 +435,21 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
     # Update bbox size
     obj.bbox_size = (float(track.bbox[2] - track.bbox[0]), float(track.bbox[3] - track.bbox[1]))
 
-    # Update keypoints (store latest skeleton)
+    # ── Per-camera pixel-space tracking (critical for ghost projection) ──
+    old_pixel = obj.camera_pixel_positions.get(track.camera_id)
+    obj.camera_pixel_positions[track.camera_id] = track.center
+    obj.camera_bbox_sizes[track.camera_id] = obj.bbox_size
+    if old_pixel is not None:
+        obj.camera_pixel_velocities[track.camera_id] = (
+            track.center[0] - old_pixel[0],
+            track.center[1] - old_pixel[1],
+        )
+
+    # Update keypoints (store latest skeleton + per-camera)
     kp = getattr(track, 'keypoints', None)
     if kp is not None:
         obj.keypoints = kp
+        obj.camera_keypoints[track.camera_id] = kp
 
     # Update appearance feature (exponential moving average for re-ID stability)
     fv = getattr(track, 'feature_vector', None)
@@ -442,6 +476,8 @@ async def _wm_create_new_object(self, track_key: Tuple[int, int], track, world_p
     object_id = self.next_object_id
     self.next_object_id += 1
     
+    _kp = getattr(track, 'keypoints', None)
+    _bsz = (float(track.bbox[2] - track.bbox[0]), float(track.bbox[3] - track.bbox[1]))
     new_object = WorldObject(
         object_id=object_id,
         world_position=world_pos,
@@ -452,9 +488,12 @@ async def _wm_create_new_object(self, track_key: Tuple[int, int], track, world_p
         last_seen_camera=track.camera_id,
         last_update=current_time,
         source_tracks={track.camera_id: track.track_id},
-        bbox_size=(float(track.bbox[2] - track.bbox[0]), float(track.bbox[3] - track.bbox[1])),
+        bbox_size=_bsz,
         feature_vector=getattr(track, 'feature_vector', None),
-        keypoints=getattr(track, 'keypoints', None),
+        keypoints=_kp,
+        camera_pixel_positions={track.camera_id: track.center},
+        camera_bbox_sizes={track.camera_id: _bsz},
+        camera_keypoints=({track.camera_id: _kp} if _kp else {}),
     )
     
     self.world_objects[object_id] = new_object
@@ -468,44 +507,55 @@ async def _wm_create_new_object(self, track_key: Tuple[int, int], track, world_p
     self.track_to_object_mapping[track_key] = object_id
     self.stats['objects_tracked'] += 1
 
-def _wm_find_matching_object(self, world_pos: Tuple[float, float, float], class_id: int, current_time: float, feature_vector=None) -> Optional[int]:
-    """Find existing object that might match this position, using spatial proximity
-    refined by appearance similarity when feature vectors are available."""
+def _wm_find_matching_object(self, world_pos: Tuple[float, float, float], class_id: int, current_time: float, feature_vector=None, camera_id: int = -1) -> Optional[int]:
+    """Find existing object that might match this position.
+
+    Two matching paths:
+      1. Spatial proximity (< 2 m) — works for calibrated cameras.
+      2. Appearance similarity — works cross-camera even when world
+         coordinates are unreliable (uncalibrated cameras).
+    """
     min_score = float('inf')
     best_match = None
-    threshold = 2.0  # 2 meter spatial gate
-    
+    spatial_threshold = 2.0    # calibrated-camera gate
+    appearance_gate   = 12.0   # allow appearance match up to 12 m world-dist
+
     for object_id, obj in self.world_objects.items():
         if obj.class_id != class_id:
             continue
-        
-        # Skip objects that were updated very recently from other cameras
-        if current_time - obj.last_update < 0.1:  # 100ms
+
+        # Skip objects updated <100 ms ago by the SAME camera (avoid double-match)
+        # but allow cross-camera matching on the same tick
+        if (current_time - obj.last_update < 0.1
+                and camera_id >= 0 and camera_id == obj.last_seen_camera):
             continue
-        
+
         spatial_dist = np.sqrt(
             (obj.world_position[0] - world_pos[0])**2 +
             (obj.world_position[1] - world_pos[1])**2 +
             (obj.world_position[2] - world_pos[2])**2
         )
-        
-        if spatial_dist >= threshold:
-            continue
-        
-        # Normalised spatial score (0 = perfect, 1 = at threshold)
-        score = spatial_dist / threshold
-        
-        # Refine with appearance similarity when both descriptors exist
-        if (feature_vector is not None and
-                obj.feature_vector is not None):
+
+        has_appearance = (feature_vector is not None and obj.feature_vector is not None)
+        cosine_sim = 0.0
+        if has_appearance:
             cosine_sim = float(np.dot(feature_vector, obj.feature_vector))
-            appearance_score = 1.0 - cosine_sim  # 0 = identical
-            score = 0.5 * score + 0.5 * appearance_score
-        
+
+        if spatial_dist < spatial_threshold:
+            # Path 1 — close in world space (calibrated)
+            score = spatial_dist / spatial_threshold
+            if has_appearance:
+                score = 0.4 * score + 0.6 * (1.0 - cosine_sim)
+        elif has_appearance and cosine_sim > 0.45 and spatial_dist < appearance_gate:
+            # Path 2 — far apart but looks like same person (uncalibrated / cross-cam)
+            score = (1.0 - cosine_sim) + 0.05   # small penalty for no spatial confirmation
+        else:
+            continue
+
         if score < min_score:
             min_score = score
             best_match = object_id
-    
+
     return best_match
 
 def _wm_cleanup_old_objects(self, current_time: float, max_age: float = 5.0):
@@ -530,76 +580,85 @@ def _wm_cleanup_old_objects(self, current_time: float, max_age: float = 5.0):
             del self.kalman_filters[object_id]
 
 def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: float) -> List[PredictedTarget]:
-    """Generate predicted targets for a specific camera"""
+    """Generate predicted targets for a specific camera.
+
+    Uses pixel-space tracking data when available (works for uncalibrated
+    cameras) and falls back to world→pixel transform as a last resort.
+    """
     predictions = []
-    
+    fw, fh = float(settings.frame_width), float(settings.frame_height)
+
     for object_id, obj in self.world_objects.items():
-        # Skip objects currently visible in this camera
+        # Skip objects currently tracked by this camera
         if camera_id in obj.source_tracks:
             continue
-        
+
         time_since_seen = current_time - obj.last_update
-        
-        # Only predict for recently seen objects
         if time_since_seen > self.prediction_horizon:
             continue
-        
-        # Predict future position
-        # Use Kalman filter to predict future world position when available
-        if object_id in self.kalman_filters:
-            kf = self.kalman_filters[object_id]
-            predicted_world_pos = kf.predict_future(time_since_seen)
+
+        # ── Determine predicted pixel position ─────────────────────
+        if camera_id in obj.camera_pixel_positions:
+            # Best case: object was previously seen on THIS camera
+            last_pos = obj.camera_pixel_positions[camera_id]
+            pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
+            frames_elapsed = time_since_seen * settings.target_fps
+            predicted_pixel = (
+                last_pos[0] + pv[0] * frames_elapsed,
+                last_pos[1] + pv[1] * frames_elapsed,
+            )
+            bw, bh = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
         else:
-            predicted_world_pos = (
-                obj.world_position[0] + obj.velocity[0] * time_since_seen,
-                obj.world_position[1] + obj.velocity[1] * time_since_seen,
-                obj.world_position[2] + obj.velocity[2] * time_since_seen
+            # Object was never seen by this camera — try world→pixel
+            if object_id in self.kalman_filters:
+                wpos = self.kalman_filters[object_id].predict_future(time_since_seen)
+            else:
+                wpos = tuple(p + v * time_since_seen for p, v in zip(obj.world_position, obj.velocity))
+            pp = self.coordinate_transform.world_to_pixel(camera_id, wpos)
+            if pp is not None and 0 <= pp[0] <= fw and 0 <= pp[1] <= fh:
+                predicted_pixel = pp
+            else:
+                # Fallback: place ghost at centre of frame
+                predicted_pixel = (fw / 2.0, fh / 2.0)
+            bw, bh = obj.bbox_size if obj.bbox_size != (0.0, 0.0) else (100.0, 200.0)
+
+        if bw < 10:
+            bw = 100.0
+        if bh < 10:
+            bh = 200.0
+
+        # Clamp to frame bounds
+        px = max(bw / 2, min(fw - bw / 2, predicted_pixel[0]))
+        py = max(bh / 2, min(fh - bh / 2, predicted_pixel[1]))
+        predicted_pixel = (px, py)
+
+        predicted_bbox = (px - bw / 2, py - bh / 2, px + bw / 2, py + bh / 2)
+        confidence = obj.confidence * max(0.1, 1.0 - time_since_seen / self.prediction_horizon)
+
+        # ── Project keypoints ──────────────────────────────────────
+        projected_kp = None
+        source_kp = obj.camera_keypoints.get(obj.last_seen_camera) or obj.keypoints
+        src_bsz = obj.camera_bbox_sizes.get(obj.last_seen_camera, obj.bbox_size)
+        if source_kp and len(source_kp) > 0:
+            projected_kp = _project_keypoints_to_camera(
+                source_kp, src_bsz, predicted_pixel, (bw, bh)
             )
-        
-        # Convert to camera coordinates
-        predicted_pixel = self.coordinate_transform.world_to_pixel(camera_id, predicted_world_pos)
-        
-        if predicted_pixel is None:
-            continue
-        
-        # Check if prediction is within camera frame
-        if (0 <= predicted_pixel[0] <= settings.frame_width and 
-            0 <= predicted_pixel[1] <= settings.frame_height):
-            
-            # Use stored bbox size instead of hardcoded 100px
-            bw, bh = obj.bbox_size if obj.bbox_size != (0.0, 0.0) else (100.0, 100.0)
-            predicted_bbox = (
-                predicted_pixel[0] - bw / 2,
-                predicted_pixel[1] - bh / 2,
-                predicted_pixel[0] + bw / 2,
-                predicted_pixel[1] + bh / 2
-            )
-            
-            # Calculate confidence decay
-            confidence = obj.confidence * max(0.1, 1.0 - time_since_seen / self.prediction_horizon)
-            
-            # Project keypoints from source camera to target camera view
-            projected_kp = None
-            if obj.keypoints is not None and len(obj.keypoints) > 0:
-                projected_kp = _project_keypoints_to_camera(
-                    obj.keypoints, obj.bbox_size, predicted_pixel, (bw, bh)
-                )
-            
-            prediction = PredictedTarget(
-                object_id=object_id,
-                camera_id=camera_id,
-                predicted_bbox=predicted_bbox,
-                predicted_center=predicted_pixel,
-                confidence=confidence,
-                time_since_seen=time_since_seen,
-                velocity_projection=(obj.velocity[0], obj.velocity[1]),
-                source_camera=obj.last_seen_camera,
-                keypoints=projected_kp,
-            )
-            
-            predictions.append(prediction)
-            self.stats['predictions_generated'] += 1
-    
+
+        prediction = PredictedTarget(
+            object_id=object_id,
+            camera_id=camera_id,
+            predicted_bbox=predicted_bbox,
+            predicted_center=predicted_pixel,
+            confidence=confidence,
+            time_since_seen=time_since_seen,
+            velocity_projection=(obj.velocity[0], obj.velocity[1]),
+            source_camera=obj.last_seen_camera,
+            keypoints=projected_kp,
+        )
+
+        predictions.append(prediction)
+        self.stats['predictions_generated'] += 1
+
     return predictions
 
 def _wm_get_world_objects(self) -> List[WorldObject]:
