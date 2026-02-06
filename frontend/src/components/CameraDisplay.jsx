@@ -18,6 +18,7 @@ const IFF = {
   FRIENDLY:  { stroke: '#00a0ff', fill: 'rgba(0,160,255,0.95)',  bg: 'rgba(0,160,255,0.25)', glow: 'rgba(0,160,255,0.65)', dim: 'rgba(0,0,0,0.55)' },
   PROJECTED: { stroke: '#00ff82', fill: 'rgba(0,255,130,0.95)',  bg: 'rgba(0,255,130,0.25)', glow: 'rgba(0,255,130,0.7)',  dim: 'rgba(0,0,0,0.55)' },
   HOSTILE:   { stroke: '#ff5050', fill: 'rgba(255,80,80,0.95)',   bg: 'rgba(255,80,80,0.25)', glow: 'rgba(255,80,80,0.7)', dim: 'rgba(0,0,0,0.55)' },
+  WORLD:     { stroke: '#ff9800', fill: 'rgba(255,152,0,0.95)',    bg: 'rgba(255,152,0,0.25)',  glow: 'rgba(255,152,0,0.7)', dim: 'rgba(0,0,0,0.55)' },
   HUD:       { stroke: 'rgba(0,200,220,0.6)', fill: 'rgba(0,200,220,0.15)', text: '#00c8dc' },
 };
 
@@ -251,7 +252,8 @@ const CameraDisplay = ({
       const pcx = (p.bbox[0] + p.bbox[2]) / 2;
       const pcy = (p.bbox[1] + p.bbox[3]) / 2;
       const ang = Math.atan2(pcy - cy, pcx - cx);
-      const iff = p.homography_source ? IFF.PROJECTED : IFF.HOSTILE;
+      const pm = p.prediction_method || (p.homography_source ? 'HOMOGRAPHY' : 'EXTRAP');
+      const iff = pm === 'HOMOGRAPHY' ? IFF.PROJECTED : pm === 'WORLD' ? IFF.WORLD : IFF.HOSTILE;
       ctx.strokeStyle = iff.stroke;
       ctx.lineWidth = 4;
       ctx.globalAlpha = 0.5;
@@ -360,9 +362,11 @@ const CameraDisplay = ({
       const [x1, y1, x2, y2] = pred.bbox;
       const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
       const bW = x2 - x1, bH = y2 - y1;
-      const isH = pred.homography_source === true;
-      const iff = isH ? IFF.PROJECTED : IFF.HOSTILE;
-      const tag = isH ? 'H-PROJ' : 'EXTRAP';
+      const pm = pred.prediction_method || (pred.homography_source ? 'HOMOGRAPHY' : 'EXTRAP');
+      const isH = pm === 'HOMOGRAPHY';
+      const isW = pm === 'WORLD';
+      const iff = isH ? IFF.PROJECTED : isW ? IFF.WORLD : IFF.HOSTILE;
+      const tag = isH ? 'H-PROJ' : isW ? 'WORLD' : 'EXTRAP';
       const src = pred.source_camera ?? -1;
 
       // ── BLOS off-screen check ──────────────────────────────────
@@ -398,7 +402,7 @@ const CameraDisplay = ({
       ctx.lineWidth = 2;
       ctx.shadowColor = iff.glow;
       ctx.shadowBlur = 12;
-      if (!isH) ctx.setLineDash([6, 4]);
+      if (!isH) ctx.setLineDash([6, 4]);  // dashed for EXTRAP and WORLD
       ctx.fillRect(x1, y1, bW, bH);
       ctx.strokeRect(x1, y1, bW, bH);
       ctx.setLineDash([]);
@@ -410,7 +414,7 @@ const CameraDisplay = ({
 
       // Corner brackets
       ctx.save();
-      if (!isH) ctx.setLineDash([5, 4]);
+      if (!isH) ctx.setLineDash([5, 4]);  // dashed for EXTRAP and WORLD
       drawCornerBrackets(ctx, x1, y1, x2, y2, iff);
       ctx.setLineDash([]);
       ctx.restore();

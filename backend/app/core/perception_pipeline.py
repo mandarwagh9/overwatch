@@ -294,6 +294,7 @@ def _ser_pred(pred, scale=1.0) -> dict:
         'inferred': True,
         'source_camera': getattr(pred, 'source_camera', -1),
         'homography_source': getattr(pred, 'homography_source', False),
+        'prediction_method': getattr(pred, 'prediction_method', 'EXTRAP'),
     }
     if pred.keypoints is not None:
         d['keypoints'] = [(kp[0]*scale, kp[1]*scale, kp[2]) for kp in pred.keypoints]

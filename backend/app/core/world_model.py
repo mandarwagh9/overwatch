@@ -62,7 +62,8 @@ class PredictedTarget:
     velocity_projection: Tuple[float, float]
     source_camera: int = -1  # camera that actually sees this person
     keypoints: Optional[list] = None  # projected COCO skeleton for ghost overlay
-    homography_source: bool = False  # True = cross-camera homography projection
+    homography_source: bool = False  # DEPRECATED — kept for compat
+    prediction_method: str = 'EXTRAP'  # 'HOMOGRAPHY', 'EXTRAP', or 'WORLD'
 
 
 # ── Cross-Camera Homography ──────────────────────────────────────────
@@ -788,12 +789,13 @@ def _wm_cleanup_old_objects(self, current_time: float, max_age: float = 5.0):
 def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: float) -> List[PredictedTarget]:
     """Generate predicted targets for a specific camera.
 
-    Two projection paths:
-      A) Homography — if another camera currently sees the person AND a
-         learned ground-plane H exists, project the foot point across.
-         Works even if THIS camera has NEVER seen the person.
-      B) Pixel extrapolation (fallback) — if this camera previously saw
-         the person, slide last-known position by velocity × time.
+    Three projection paths (tried in order of accuracy):
+      A) Homography — tries ALL cameras that currently see the person,
+         looking for any valid H to the target camera.
+      B) Pixel extrapolation — if this camera previously saw the person,
+         slide last-known position by velocity × time (adaptive budget).
+      C) World-coordinate projection — project the fused 3D world
+         position through the camera model.  Rough but always works.
     """
     predictions = []
     fw, fh = float(settings.frame_width), float(settings.frame_height)
@@ -811,56 +813,97 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
         predicted_pixel = None
         bw, bh = 100.0, 200.0
         pv = (0.0, 0.0)
-        from_homography = False
+        method = 'EXTRAP'
         time_since_seen = current_time - obj.camera_last_seen.get(camera_id, obj.last_update)
+        best_source_cam = obj.last_seen_camera
 
-        # ── Path A: Cross-camera HOMOGRAPHY projection ───────────
-        # If the person is currently tracked by another camera AND we
-        # have a homography from that camera to this one, project the
-        # foot point across views.  This is the primary, accurate path.
-        source_cam = obj.last_seen_camera
-        source_fresh = (current_time - obj.camera_last_seen.get(source_cam, 0)) < 1.0
-        if (source_cam != camera_id
-                and source_cam in obj.camera_pixel_positions
-                and source_fresh
-                and self.cross_camera_homography.has_homography(source_cam, camera_id)):
-            src_pos = obj.camera_pixel_positions[source_cam]
-            src_bsz = obj.camera_bbox_sizes.get(source_cam, obj.bbox_size)
+        # ── Path A: Cross-camera HOMOGRAPHY (try ALL source cams) ─
+        # Iterate every camera that has recent pixel data for this
+        # object and a valid homography to the target camera.
+        # Pick the freshest successful projection.
+        candidate_cams = set()
+        # Primary: cameras currently tracking this object
+        for c_id in obj.source_tracks:
+            if c_id != camera_id:
+                candidate_cams.add(c_id)
+        # Secondary: any camera with recent pixel data
+        for c_id, t in obj.camera_last_seen.items():
+            if c_id != camera_id and (current_time - t) < 1.5:
+                candidate_cams.add(c_id)
+
+        best_h_result = None
+        best_h_freshness = 999.0
+        for src_cam in candidate_cams:
+            src_age = current_time - obj.camera_last_seen.get(src_cam, 0)
+            if src_age > 1.5:
+                continue
+            if src_cam not in obj.camera_pixel_positions:
+                continue
+            if not self.cross_camera_homography.has_homography(src_cam, camera_id):
+                continue
+            src_pos = obj.camera_pixel_positions[src_cam]
+            src_bsz = obj.camera_bbox_sizes.get(src_cam, obj.bbox_size)
             src_foot = (src_pos[0], src_pos[1] + src_bsz[1] / 2.0)
             result = self.cross_camera_homography.project_bbox(
-                source_cam, camera_id, src_foot, src_bsz[1], src_bsz[0]
+                src_cam, camera_id, src_foot, src_bsz[1], src_bsz[0]
             )
-            if result is not None:
-                dst_foot, est_w, est_h = result
-                # Foot point → center = move up by half height
-                cx, cy = dst_foot[0], dst_foot[1] - est_h / 2.0
-                bw, bh = est_w, est_h
-                predicted_pixel = (cx, cy)
-                from_homography = True
-                time_since_seen = current_time - obj.camera_last_seen.get(source_cam, obj.last_update)
+            if result is not None and src_age < best_h_freshness:
+                best_h_result = result
+                best_h_freshness = src_age
+                best_source_cam = src_cam
 
-        # ── Path B: Pixel-space EXTRAPOLATION (fallback) ──────────
-        if predicted_pixel is None:
-            if camera_id not in obj.camera_pixel_positions:
-                continue  # never seen here + no homography → skip
+        if best_h_result is not None:
+            dst_foot, est_w, est_h = best_h_result
+            cx, cy = dst_foot[0], dst_foot[1] - est_h / 2.0
+            bw, bh = est_w, est_h
+            predicted_pixel = (cx, cy)
+            method = 'HOMOGRAPHY'
+            time_since_seen = best_h_freshness
+
+        # ── Path B: Pixel-space EXTRAPOLATION (adaptive budget) ───
+        if predicted_pixel is None and camera_id in obj.camera_pixel_positions:
             cam_time = current_time - obj.camera_last_seen.get(camera_id, obj.last_update)
-            if cam_time > self.prediction_horizon:
-                continue
-            time_since_seen = cam_time
-            last_pos = obj.camera_pixel_positions[camera_id]
-            pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
-            dx = pv[0] * time_since_seen
-            dy = pv[1] * time_since_seen
-            max_extrap = 80.0
-            extrap_dist = (dx**2 + dy**2) ** 0.5
-            if extrap_dist > max_extrap:
-                s = max_extrap / max(extrap_dist, 1e-6)
-                dx *= s
-                dy *= s
-            predicted_pixel = (last_pos[0] + dx, last_pos[1] + dy)
-            bw_c, bh_c = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
-            if bw_c >= 10 and bh_c >= 10:
-                bw, bh = bw_c, bh_c
+            if cam_time <= self.prediction_horizon:
+                time_since_seen = cam_time
+                last_pos = obj.camera_pixel_positions[camera_id]
+                pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
+                dx = pv[0] * time_since_seen
+                dy = pv[1] * time_since_seen
+                # Adaptive budget: further extrapolation with time, capped at 250px
+                max_extrap = min(250.0, 80.0 + 40.0 * time_since_seen)
+                extrap_dist = (dx**2 + dy**2) ** 0.5
+                if extrap_dist > max_extrap:
+                    s = max_extrap / max(extrap_dist, 1e-6)
+                    dx *= s
+                    dy *= s
+                predicted_pixel = (last_pos[0] + dx, last_pos[1] + dy)
+                method = 'EXTRAP'
+                bw_c, bh_c = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
+                if bw_c >= 10 and bh_c >= 10:
+                    bw, bh = bw_c, bh_c
+
+        # ── Path C: World-coordinate PROJECTION (rough fallback) ──
+        # Uses the fused 3D world position and a simple pinhole model
+        # to place the ghost.  Less accurate but ALWAYS works even if
+        # this camera has never seen the person and no homography exists.
+        if predicted_pixel is None:
+            wp = obj.world_position
+            pixel = self.coordinate_transform.world_to_pixel(camera_id, wp)
+            if pixel is not None:
+                px_x, px_y = pixel
+                # Sanity: only accept if the projection lands roughly on-screen
+                if -fw * 0.5 <= px_x <= fw * 1.5 and -fh * 0.5 <= px_y <= fh * 1.5:
+                    predicted_pixel = (px_x, px_y)
+                    method = 'WORLD'
+                    time_since_seen = time_since_global
+                    # Estimate bbox size from world distance
+                    depth_est = max(abs(wp[2] - 2.0), 0.5)  # rough depth
+                    bh = min(fh * 0.8, max(80.0, 500.0 / depth_est))
+                    bw = bh * 0.4
+
+        # If all three paths failed, skip this object
+        if predicted_pixel is None:
+            continue
 
         # ── Common: clamp, bbox, confidence, keypoints ────────────
         px = max(bw / 2, min(fw - bw / 2, predicted_pixel[0]))
@@ -868,16 +911,19 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
         predicted_pixel = (px, py)
 
         predicted_bbox = (px - bw / 2, py - bh / 2, px + bw / 2, py + bh / 2)
-        # Homography projections are real-time — higher base confidence
-        if from_homography:
-            confidence = obj.confidence * max(0.3, 1.0 - time_since_seen / 3.0)
-        else:
-            confidence = obj.confidence * max(0.1, 1.0 - time_since_seen / self.prediction_horizon)
 
-        # Project keypoints
+        # Confidence: homography is best, world is roughest
+        if method == 'HOMOGRAPHY':
+            confidence = obj.confidence * max(0.3, 1.0 - time_since_seen / 3.0)
+        elif method == 'EXTRAP':
+            confidence = obj.confidence * max(0.1, 1.0 - time_since_seen / self.prediction_horizon)
+        else:  # WORLD
+            confidence = obj.confidence * max(0.15, 0.6 - time_since_seen / self.prediction_horizon)
+
+        # Project keypoints from best source
         projected_kp = None
-        source_kp = obj.camera_keypoints.get(obj.last_seen_camera) or obj.keypoints
-        src_bsz = obj.camera_bbox_sizes.get(obj.last_seen_camera, obj.bbox_size)
+        source_kp = obj.camera_keypoints.get(best_source_cam) or obj.keypoints
+        src_bsz = obj.camera_bbox_sizes.get(best_source_cam, obj.bbox_size)
         if source_kp and len(source_kp) > 0:
             projected_kp = _project_keypoints_to_camera(
                 source_kp, src_bsz, predicted_pixel, (bw, bh)
@@ -891,9 +937,10 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
             confidence=confidence,
             time_since_seen=time_since_seen,
             velocity_projection=(pv[0], pv[1]),
-            source_camera=obj.last_seen_camera,
+            source_camera=best_source_cam,
             keypoints=projected_kp,
-            homography_source=from_homography,
+            homography_source=(method == 'HOMOGRAPHY'),
+            prediction_method=method,
         )
 
         predictions.append(prediction)
