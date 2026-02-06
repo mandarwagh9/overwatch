@@ -376,7 +376,7 @@ const CameraDisplay = ({
         }
         
         // Draw overlays after image loads
-        setTimeout(drawOverlays, 10);
+        drawOverlays();
         
         // Clean up object URL
         URL.revokeObjectURL(imageUrl);

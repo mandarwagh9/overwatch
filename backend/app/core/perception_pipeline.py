@@ -143,6 +143,12 @@ class PerceptionPipeline:
             if jpeg is None:
                 continue
 
+            # Compute resize scale — coords are in original resolution but
+            # the JPEG canvas is downscaled to _max_width pixels wide
+            scale = 1.0
+            if cf.frame is not None and cf.frame.shape[1] > self._max_width:
+                scale = self._max_width / cf.frame.shape[1]
+
             det = detection_results[i] if i < len(detection_results) else None
             trk = tracking_results[i] if i < len(tracking_results) else None
 
@@ -153,9 +159,9 @@ class PerceptionPipeline:
                 'camera_id': cf.camera_id,
                 'timestamp': now,
                 'frame_data': jpeg,
-                'detections': [_ser_det(d) for d in (det.detections if det else [])],
-                'tracks': [_ser_track(t) for t in (trk.tracks if trk else [])],
-                'predictions': [_ser_pred(p) for p in preds],
+                'detections': [_ser_det(d, scale) for d in (det.detections if det else [])],
+                'tracks': [_ser_track(t, scale) for t in (trk.tracks if trk else [])],
+                'predictions': [_ser_pred(p, scale) for p in preds],
             }
             snap.camera_packets[cf.camera_id] = msgpack.packb(msg, use_bin_type=True)
 
@@ -227,49 +233,55 @@ class PerceptionPipeline:
 
 # ── Module-level serialization helpers ─────────────────────────────────
 
-def _ser_det(det) -> dict:
+def _ser_det(det, scale=1.0) -> dict:
+    b = det.bbox
+    c = det.center
     d = {
-        'bbox': det.bbox,
+        'bbox': (b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale),
         'confidence': det.confidence,
         'class_id': det.class_id,
         'class_name': det.class_name,
-        'center': det.center,
+        'center': (c[0]*scale, c[1]*scale),
     }
     if det.keypoints is not None:
-        d['keypoints'] = det.keypoints
+        d['keypoints'] = [(kp[0]*scale, kp[1]*scale, kp[2]) for kp in det.keypoints]
     return d
 
 
-def _ser_track(track) -> dict:
+def _ser_track(track, scale=1.0) -> dict:
+    b = track.bbox
+    c = track.center
     d = {
         'track_id': track.track_id,
-        'bbox': track.bbox,
-        'center': track.center,
+        'bbox': (b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale),
+        'center': (c[0]*scale, c[1]*scale),
         'confidence': track.confidence,
         'class_id': track.class_id,
         'class_name': track.class_name,
         'age': track.age,
         'hits': track.hits,
-        'velocity': track.velocity,
-        'predicted_position': track.predicted_position,
+        'velocity': (track.velocity[0]*scale, track.velocity[1]*scale) if track.velocity else (0, 0),
+        'predicted_position': (track.predicted_position[0]*scale, track.predicted_position[1]*scale) if track.predicted_position else None,
     }
     if track.keypoints is not None:
-        d['keypoints'] = track.keypoints
+        d['keypoints'] = [(kp[0]*scale, kp[1]*scale, kp[2]) for kp in track.keypoints]
     return d
 
 
-def _ser_pred(pred) -> dict:
+def _ser_pred(pred, scale=1.0) -> dict:
+    b = pred.predicted_bbox
+    c = pred.predicted_center
     d = {
         'object_id': pred.object_id,
-        'bbox': pred.predicted_bbox,
-        'center': pred.predicted_center,
+        'bbox': (b[0]*scale, b[1]*scale, b[2]*scale, b[3]*scale),
+        'center': (c[0]*scale, c[1]*scale),
         'confidence': pred.confidence,
         'time_since_seen': pred.time_since_seen,
-        'velocity_projection': pred.velocity_projection,
+        'velocity_projection': (pred.velocity_projection[0]*scale, pred.velocity_projection[1]*scale),
         'type': 'prediction',
         'inferred': True,
         'source_camera': getattr(pred, 'source_camera', -1),
     }
     if pred.keypoints is not None:
-        d['keypoints'] = pred.keypoints
+        d['keypoints'] = [(kp[0]*scale, kp[1]*scale, kp[2]) for kp in pred.keypoints]
     return d

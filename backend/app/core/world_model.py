@@ -46,6 +46,7 @@ class WorldObject:
     camera_pixel_velocities: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     camera_bbox_sizes: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     camera_keypoints: Dict[int, list] = field(default_factory=dict)
+    camera_last_seen: Dict[int, float] = field(default_factory=dict)   # camera_id -> last update time
 
 
 @dataclass
@@ -327,7 +328,10 @@ async def _wm_update_with_tracking_results(self, tracking_results: List[Tracking
     for tr in tracking_results:
         cameras_reporting.add(tr.camera_id)
         for t in tr.tracks:
-            active_track_keys.add((tr.camera_id, t.track_id))
+            # Only actively-measured tracks count; coasting tracks (predicted
+            # positions from the tracker) should NOT block ghost predictions
+            if t.time_since_update <= 3:
+                active_track_keys.add((tr.camera_id, t.track_id))
     
     # For each world object, remove source_track entries where the camera
     # reported tracks this tick but the specific track_id is gone (lost tracking)
@@ -349,6 +353,11 @@ async def _wm_process_camera_tracks(self, tracking_result: TrackingResult, curre
     camera_id = tracking_result.camera_id
     
     for track in tracking_result.tracks:
+        # Skip heavily coasting tracks — stale predicted positions corrupt
+        # the world model and delay ghost prediction generation
+        if track.time_since_update > 3:
+            continue
+
         track_key = (camera_id, track.track_id)
         
         # Convert track position to world coordinates
@@ -424,7 +433,7 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
         obj.world_position = world_pos
         obj.velocity = velocity
 
-    obj.confidence = max(obj.confidence, track.confidence)
+    obj.confidence = track.confidence
     obj.last_seen_camera = track.camera_id
     obj.last_update = current_time
     obj.prediction_confidence = 1.0
@@ -437,13 +446,16 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
 
     # ── Per-camera pixel-space tracking (critical for ghost projection) ──
     old_pixel = obj.camera_pixel_positions.get(track.camera_id)
+    old_cam_time = obj.camera_last_seen.get(track.camera_id, current_time)
+    dt = max(1e-3, current_time - old_cam_time)
     obj.camera_pixel_positions[track.camera_id] = track.center
     obj.camera_bbox_sizes[track.camera_id] = obj.bbox_size
     if old_pixel is not None:
         obj.camera_pixel_velocities[track.camera_id] = (
-            track.center[0] - old_pixel[0],
-            track.center[1] - old_pixel[1],
+            (track.center[0] - old_pixel[0]) / dt,
+            (track.center[1] - old_pixel[1]) / dt,
         )
+    obj.camera_last_seen[track.camera_id] = current_time
 
     # Update keypoints (store latest skeleton + per-camera)
     kp = getattr(track, 'keypoints', None)
@@ -492,8 +504,13 @@ async def _wm_create_new_object(self, track_key: Tuple[int, int], track, world_p
         feature_vector=getattr(track, 'feature_vector', None),
         keypoints=_kp,
         camera_pixel_positions={track.camera_id: track.center},
+        camera_pixel_velocities={track.camera_id: (
+            track.velocity[0] * settings.target_fps,
+            track.velocity[1] * settings.target_fps,
+        )},
         camera_bbox_sizes={track.camera_id: _bsz},
         camera_keypoints=({track.camera_id: _kp} if _kp else {}),
+        camera_last_seen={track.camera_id: current_time},
     )
     
     self.world_objects[object_id] = new_object
@@ -593,7 +610,8 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
         if camera_id in obj.source_tracks:
             continue
 
-        time_since_seen = current_time - obj.last_update
+        # Per-camera time since last seen (not shared obj.last_update)
+        time_since_seen = current_time - obj.camera_last_seen.get(camera_id, obj.last_update)
         if time_since_seen > self.prediction_horizon:
             continue
 
@@ -605,19 +623,21 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
 
         last_pos = obj.camera_pixel_positions[camera_id]
         pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
-        frames_elapsed = time_since_seen * settings.target_fps
-        predicted_pixel = (
-            last_pos[0] + pv[0] * frames_elapsed,
-            last_pos[1] + pv[1] * frames_elapsed,
-        )
+        # pv is pixels/second; time_since_seen is seconds
+        dx = pv[0] * time_since_seen
+        dy = pv[1] * time_since_seen
+        # Cap extrapolation to prevent predictions flying off-screen
+        max_extrap = 80.0
+        extrap_dist = (dx**2 + dy**2) ** 0.5
+        if extrap_dist > max_extrap:
+            s = max_extrap / max(extrap_dist, 1e-6)
+            dx *= s
+            dy *= s
+        predicted_pixel = (last_pos[0] + dx, last_pos[1] + dy)
         bw, bh = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
-        if bw == 0 and bh == 0:
-            bw, bh = obj.bbox_size if obj.bbox_size != (0.0, 0.0) else (100.0, 200.0)
-
-        if bw < 10:
-            bw = 100.0
-        if bh < 10:
-            bh = 200.0
+        if bw < 10 or bh < 10:
+            fb = obj.bbox_size if obj.bbox_size[0] >= 10 and obj.bbox_size[1] >= 10 else (100.0, 200.0)
+            bw, bh = fb
 
         # Clamp to frame bounds
         px = max(bw / 2, min(fw - bw / 2, predicted_pixel[0]))
@@ -643,7 +663,7 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
             predicted_center=predicted_pixel,
             confidence=confidence,
             time_since_seen=time_since_seen,
-            velocity_projection=(obj.velocity[0], obj.velocity[1]),
+            velocity_projection=(pv[0], pv[1]),  # pixel-space velocity (px/s)
             source_camera=obj.last_seen_camera,
             keypoints=projected_kp,
         )
