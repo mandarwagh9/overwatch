@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/react-18-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" />
   <img src="https://img.shields.io/badge/TensorRT-FP16-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="TensorRT" />
   <img src="https://img.shields.io/badge/Jetson_Orin_Nano-Edge-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="Jetson" />
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License" />
+  <img src="https://img.shields.io/badge/license-Proprietary-red?style=for-the-badge" alt="License" />
 </p>
 
 <h1 align="center">🎯 OVERWATCH</h1>
@@ -757,7 +757,9 @@ The cross-camera homography system is built on established multi-view geometry p
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is **proprietary software**. Copyright © 2024–2026 Mandar Wagh. All rights reserved.
+
+Unauthorized use, copying, modification, or distribution is strictly prohibited. See [LICENSE](LICENSE) for full terms.
 
 ---
 
