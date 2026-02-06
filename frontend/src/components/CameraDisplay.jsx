@@ -1,61 +1,40 @@
 /**
- * CameraDisplay — EagleEye-inspired Tactical Perception Overlay
+ * CameraDisplay — EagleEye Tactical Perception Overlay v2
  * 
- * Replaces developer bounding boxes with military-grade ambient AR markers:
- *  ◆ Diamond/chevron entity markers with IFF color coding
- *  ◆ Distance estimation from bbox height (~1.7m assumed person height)
- *  ◆ BLOS (Beyond Line Of Sight) edge-clamped directional indicators
- *  ◆ Compass bearing ribbon (when orientation data available)
- *  ◆ Threat awareness arc on viewport edge
- *  ◆ Minimal COCO skeleton in ghost-mode for predictions
+ * BOLD, high-contrast military HUD that works on ANY background:
+ *  ◆ Large diamond/chevron markers with dark contrast backdrops
+ *  ◆ IFF color coding: Amber=detect, Blue=track, Green=H-PROJ, Red=EXTRAP
+ *  ◆ Distance estimation from bbox height (~1.7m person)
+ *  ◆ BLOS edge-clamped indicators for off-screen predictions
+ *  ◆ Compass ribbon + threat ring
+ *  ◆ COCO skeleton overlay
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
-// ── IFF Color System ────────────────────────────────────────────────────
-// Inspired by Anduril EagleEye IFF classification
+// ── IFF Color System — BOLD opacities ───────────────────────────────────
 const IFF = {
-  // Detection — unclassified, first-seen
-  UNKNOWN:     { fill: 'rgba(255,191,0,0.9)',   stroke: '#ffbf00', bg: 'rgba(255,191,0,0.18)', glow: 'rgba(255,191,0,0.5)',  text: '#000' },
-  // Tracked — identified & being followed  
-  FRIENDLY:    { fill: 'rgba(0,160,255,0.9)',    stroke: '#00a0ff', bg: 'rgba(0,160,255,0.12)', glow: 'rgba(0,160,255,0.45)', text: '#fff' },
-  // Prediction via homography (high confidence cross-cam)
-  PROJECTED:   { fill: 'rgba(0,255,130,0.9)',    stroke: '#00ff82', bg: 'rgba(0,255,130,0.10)', glow: 'rgba(0,255,130,0.5)',  text: '#000' },
-  // Prediction via extrapolation (lower confidence)
-  HOSTILE:     { fill: 'rgba(255,80,80,0.9)',     stroke: '#ff5050', bg: 'rgba(255,80,80,0.12)', glow: 'rgba(255,80,80,0.5)', text: '#fff' },
-  // UI accent
-  HUD:         { stroke: 'rgba(0,200,220,0.6)',  fill: 'rgba(0,200,220,0.15)', text: '#00c8dc' },
+  UNKNOWN:   { stroke: '#ffbf00', fill: 'rgba(255,191,0,0.95)',  bg: 'rgba(255,191,0,0.30)', glow: 'rgba(255,191,0,0.7)',  dim: 'rgba(0,0,0,0.55)' },
+  FRIENDLY:  { stroke: '#00a0ff', fill: 'rgba(0,160,255,0.95)',  bg: 'rgba(0,160,255,0.25)', glow: 'rgba(0,160,255,0.65)', dim: 'rgba(0,0,0,0.55)' },
+  PROJECTED: { stroke: '#00ff82', fill: 'rgba(0,255,130,0.95)',  bg: 'rgba(0,255,130,0.25)', glow: 'rgba(0,255,130,0.7)',  dim: 'rgba(0,0,0,0.55)' },
+  HOSTILE:   { stroke: '#ff5050', fill: 'rgba(255,80,80,0.95)',   bg: 'rgba(255,80,80,0.25)', glow: 'rgba(255,80,80,0.7)', dim: 'rgba(0,0,0,0.55)' },
+  HUD:       { stroke: 'rgba(0,200,220,0.6)', fill: 'rgba(0,200,220,0.15)', text: '#00c8dc' },
 };
 
-// ── COCO Skeleton Topology ──────────────────────────────────────────────
+// ── COCO Skeleton ───────────────────────────────────────────────────────
 const COCO_SKELETON = [
-  [0, 1], [0, 2], [1, 3], [2, 4],           // head
-  [5, 6],                                     // shoulders
-  [5, 7], [7, 9],                             // left arm
-  [6, 8], [8, 10],                            // right arm
-  [5, 11], [6, 12],                           // torso
-  [11, 12],                                   // hips
-  [11, 13], [13, 15],                         // left leg
-  [12, 14], [14, 16],                         // right leg
-  [0, 5], [0, 6],                             // neck approx
-  [3, 5], [4, 6],                             // ears → shoulders
+  [0,1],[0,2],[1,3],[2,4],[5,6],[5,7],[7,9],[6,8],[8,10],
+  [5,11],[6,12],[11,12],[11,13],[13,15],[12,14],[14,16],[0,5],[0,6],[3,5],[4,6],
 ];
 const KP_CONF = 0.25;
 
-// ── Assumed person height for distance estimation (meters) ──────────────
 const PERSON_HEIGHT_M = 1.7;
-// Approximate vertical FOV reference height at 1m (calibrate per camera)
 const REF_PX_AT_1M = 520;
 
 // ─────────────────────────────────────────────────────────────────────────
 const CameraDisplay = ({
-  cameraId,
-  frameData,
-  detections = [],
-  tracks = [],
-  predictions = [],
-  isActive = false,
-  sensorData = null,   // { orientation: { alpha, beta, gamma } }
+  cameraId, frameData, detections = [], tracks = [], predictions = [],
+  isActive = false, sensorData = null,
 }) => {
   const canvasRef = useRef(null);
   const imageRef  = useRef(null);
@@ -63,166 +42,150 @@ const CameraDisplay = ({
   const [stats, setStats] = useState({ detectionsCount: 0, tracksCount: 0, predictionsCount: 0 });
 
   useEffect(() => {
-    setStats({
-      detectionsCount: detections.length,
-      tracksCount: tracks.length,
-      predictionsCount: predictions.length,
-    });
+    setStats({ detectionsCount: detections.length, tracksCount: tracks.length, predictionsCount: predictions.length });
   }, [detections, tracks, predictions]);
 
-  // ── Helper: estimate distance from bounding-box height ───────────────
-  const estimateDistance = useCallback((bboxHeight) => {
-    if (bboxHeight <= 0) return null;
-    const dist = (PERSON_HEIGHT_M * REF_PX_AT_1M) / bboxHeight;
-    return Math.round(dist * 10) / 10;   // one decimal
+  // ── Distance from bbox height ────────────────────────────────────────
+  const estimateDistance = useCallback((bboxH) => {
+    if (bboxH <= 0) return null;
+    return Math.round((PERSON_HEIGHT_M * REF_PX_AT_1M) / bboxH * 10) / 10;
   }, []);
 
-  // ── Helper: draw a diamond (rotated square) ──────────────────────────
-  const drawDiamond = useCallback((ctx, cx, cy, size, iff, filled = false) => {
+  // ── DIAMOND — large, bold, with dark backdrop ────────────────────────
+  const drawDiamond = useCallback((ctx, cx, cy, size, iff, filled) => {
     ctx.save();
+
+    // Dark backdrop circle for contrast on ANY background
+    ctx.fillStyle = iff.dim;
+    ctx.beginPath();
+    ctx.arc(cx, cy, size * 0.9, 0, 2 * Math.PI);
+    ctx.fill();
+
     ctx.translate(cx, cy);
     ctx.rotate(Math.PI / 4);
     ctx.strokeStyle = iff.stroke;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.shadowColor = iff.glow;
-    ctx.shadowBlur = 8;
-
+    ctx.shadowBlur = 14;
     if (filled) {
       ctx.fillStyle = iff.bg;
       ctx.fillRect(-size / 2, -size / 2, size, size);
     }
     ctx.strokeRect(-size / 2, -size / 2, size, size);
-
     ctx.restore();
   }, []);
 
-  // ── Helper: draw tactical corner brackets ────────────────────────────
-  const drawCornerBrackets = useCallback((ctx, x1, y1, x2, y2, iff, lineLen) => {
+  // ── CORNER BRACKETS — thick, long, glowing ───────────────────────────
+  const drawCornerBrackets = useCallback((ctx, x1, y1, x2, y2, iff, overrideLen) => {
     ctx.save();
     ctx.strokeStyle = iff.stroke;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.lineCap = 'square';
     ctx.shadowColor = iff.glow;
-    ctx.shadowBlur = 4;
+    ctx.shadowBlur = 10;
+    const len = overrideLen || Math.max(20, Math.min(30, (x2 - x1) * 0.2, (y2 - y1) * 0.2));
 
-    const len = lineLen || Math.min(18, (x2 - x1) * 0.15, (y2 - y1) * 0.15);
-
-    // Top-left
-    ctx.beginPath();
-    ctx.moveTo(x1, y1 + len); ctx.lineTo(x1, y1); ctx.lineTo(x1 + len, y1);
-    ctx.stroke();
-    // Top-right
-    ctx.beginPath();
-    ctx.moveTo(x2 - len, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + len);
-    ctx.stroke();
-    // Bottom-left
-    ctx.beginPath();
-    ctx.moveTo(x1, y2 - len); ctx.lineTo(x1, y2); ctx.lineTo(x1 + len, y2);
-    ctx.stroke();
-    // Bottom-right
-    ctx.beginPath();
-    ctx.moveTo(x2 - len, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - len);
-    ctx.stroke();
-
+    // TL
+    ctx.beginPath(); ctx.moveTo(x1, y1 + len); ctx.lineTo(x1, y1); ctx.lineTo(x1 + len, y1); ctx.stroke();
+    // TR
+    ctx.beginPath(); ctx.moveTo(x2 - len, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + len); ctx.stroke();
+    // BL
+    ctx.beginPath(); ctx.moveTo(x1, y2 - len); ctx.lineTo(x1, y2); ctx.lineTo(x1 + len, y2); ctx.stroke();
+    // BR
+    ctx.beginPath(); ctx.moveTo(x2 - len, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - len); ctx.stroke();
     ctx.restore();
   }, []);
 
-  // ── Helper: draw a compact tactical info pill ────────────────────────
+  // ── TACTICAL PILL — solid dark bg, readable on any image ─────────────
   const drawTacticalPill = useCallback((ctx, cx, topY, label, sublabel, iff) => {
     ctx.save();
-    ctx.font = 'bold 10px "Consolas", "Courier New", monospace';
+    ctx.font = 'bold 12px "Consolas", "Courier New", monospace';
     const tw = ctx.measureText(label).width;
-    const stw = sublabel ? ctx.measureText(sublabel).width : 0;
-    const pad = 6;
-    const h = sublabel ? 28 : 16;
+    const stw = sublabel ? (() => { ctx.font = '10px "Consolas", monospace'; return ctx.measureText(sublabel).width; })() : 0;
+    ctx.font = 'bold 12px "Consolas", "Courier New", monospace';
+    const pad = 8;
+    const h = sublabel ? 32 : 20;
     const w = Math.max(tw, stw) + pad * 2;
     const px = cx - w / 2;
-    const py = topY - h - 6;
+    const py = topY - h - 10;
 
-    // Pill bg
-    ctx.fillStyle = iff.bg;
-    ctx.strokeStyle = iff.stroke;
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.92;
-
-    // roundRect with fallback
+    // Solid dark background for readability
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
     ctx.beginPath();
     if (ctx.roundRect) {
-      ctx.roundRect(px, py, w, h, 3);
+      ctx.roundRect(px, py, w, h, 4);
     } else {
-      // Fallback for browsers without roundRect
-      const r = 3;
+      const r = 4;
       ctx.moveTo(px + r, py);
-      ctx.lineTo(px + w - r, py);
-      ctx.quadraticCurveTo(px + w, py, px + w, py + r);
-      ctx.lineTo(px + w, py + h - r);
-      ctx.quadraticCurveTo(px + w, py + h, px + w - r, py + h);
-      ctx.lineTo(px + r, py + h);
-      ctx.quadraticCurveTo(px, py + h, px, py + h - r);
-      ctx.lineTo(px, py + r);
-      ctx.quadraticCurveTo(px, py, px + r, py);
+      ctx.lineTo(px + w - r, py); ctx.quadraticCurveTo(px + w, py, px + w, py + r);
+      ctx.lineTo(px + w, py + h - r); ctx.quadraticCurveTo(px + w, py + h, px + w - r, py + h);
+      ctx.lineTo(px + r, py + h); ctx.quadraticCurveTo(px, py + h, px, py + h - r);
+      ctx.lineTo(px, py + r); ctx.quadraticCurveTo(px, py, px + r, py);
       ctx.closePath();
     }
     ctx.fill();
+
+    // Colored border
+    ctx.strokeStyle = iff.stroke;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = iff.glow;
+    ctx.shadowBlur = 8;
     ctx.stroke();
-    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
 
     // Main label
     ctx.fillStyle = iff.stroke;
-    ctx.fillText(label, px + pad, py + 12);
+    ctx.font = 'bold 12px "Consolas", "Courier New", monospace';
+    ctx.fillText(label, px + pad, py + 15);
 
     // Sub-label
     if (sublabel) {
-      ctx.font = '9px "Consolas", "Courier New", monospace';
-      ctx.fillStyle = 'rgba(255,255,255,0.7)';
-      ctx.fillText(sublabel, px + pad, py + 23);
+      ctx.font = '10px "Consolas", "Courier New", monospace';
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillText(sublabel, px + pad, py + 27);
     }
 
-    // Thin connecting line to entity
+    // Connecting line
     ctx.strokeStyle = iff.stroke;
     ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.4;
-    ctx.beginPath();
-    ctx.moveTo(cx, py + h);
-    ctx.lineTo(cx, topY);
-    ctx.stroke();
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath(); ctx.moveTo(cx, py + h); ctx.lineTo(cx, topY); ctx.stroke();
     ctx.globalAlpha = 1;
-
     ctx.restore();
   }, []);
 
-  // ── Helper: draw chevron (directional wedge for BLOS indicators) ─────
+  // ── BLOS CHEVRON — large directional indicator ───────────────────────
   const drawEdgeChevron = useCallback((ctx, x, y, angle, size, iff) => {
     ctx.save();
+
+    // Dark backdrop circle
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.beginPath();
+    ctx.arc(x, y, size + 4, 0, 2 * Math.PI);
+    ctx.fill();
+
     ctx.translate(x, y);
     ctx.rotate(angle);
-
     ctx.strokeStyle = iff.stroke;
     ctx.fillStyle = iff.bg;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.shadowColor = iff.glow;
-    ctx.shadowBlur = 10;
-
+    ctx.shadowBlur = 14;
     ctx.beginPath();
     ctx.moveTo(0, -size);
-    ctx.lineTo(size * 0.7, 0);
+    ctx.lineTo(size * 0.8, 0);
     ctx.lineTo(0, size);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-
     ctx.restore();
   }, []);
 
-  // ── Helper: skeleton ghost renderer ──────────────────────────────────
-  const drawSkeleton = useCallback((ctx, keypoints, color, lineWidth, ghost = false) => {
+  // ── SKELETON ─────────────────────────────────────────────────────────
+  const drawSkeleton = useCallback((ctx, keypoints, color, lineWidth, ghost) => {
     if (!keypoints || keypoints.length < 17) return;
     ctx.save();
-    if (ghost) {
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 12;
-      ctx.setLineDash([5, 4]);
-    }
+    if (ghost) { ctx.shadowColor = color; ctx.shadowBlur = 16; ctx.setLineDash([6, 4]); }
     ctx.strokeStyle = color;
     ctx.lineWidth = lineWidth;
     ctx.lineCap = 'round';
@@ -237,96 +200,65 @@ const CameraDisplay = ({
       if (!kp || kp[2] < KP_CONF) return;
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(kp[0], kp[1], ghost ? 3 : 2.5, 0, 2 * Math.PI);
+      ctx.arc(kp[0], kp[1], ghost ? 4 : 3, 0, 2 * Math.PI);
       ctx.fill();
     });
     ctx.restore();
   }, []);
 
-  // ── Helper: compass bearing ribbon ───────────────────────────────────
-  const drawCompassRibbon = useCallback((ctx, canvasW, heading) => {
+  // ── COMPASS RIBBON ───────────────────────────────────────────────────
+  const drawCompassRibbon = useCallback((ctx, W, heading) => {
     if (heading == null) return;
-    const ribbonH = 22;
+    const rH = 24;
     ctx.save();
-
-    // Semi-transparent bar
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(0, 0, canvasW, ribbonH);
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, W, rH);
     ctx.strokeStyle = IFF.HUD.stroke;
     ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, ribbonH); ctx.lineTo(canvasW, ribbonH); ctx.stroke();
-
-    // Cardinal and ordinal directions
-    const cardinals = [
-      { deg: 0, label: 'N' }, { deg: 45, label: 'NE' },
-      { deg: 90, label: 'E' }, { deg: 135, label: 'SE' },
-      { deg: 180, label: 'S' }, { deg: 225, label: 'SW' },
-      { deg: 270, label: 'W' }, { deg: 315, label: 'NW' },
-    ];
-
-    ctx.font = 'bold 10px "Consolas", monospace';
+    ctx.beginPath(); ctx.moveTo(0, rH); ctx.lineTo(W, rH); ctx.stroke();
+    const cards = [{d:0,l:'N'},{d:45,l:'NE'},{d:90,l:'E'},{d:135,l:'SE'},{d:180,l:'S'},{d:225,l:'SW'},{d:270,l:'W'},{d:315,l:'NW'}];
+    ctx.font = 'bold 11px "Consolas", monospace';
     ctx.textAlign = 'center';
-    const pixPerDeg = canvasW / 120;   // show ~120° of compass
-
-    cardinals.forEach(({ deg, label }) => {
-      let diff = deg - heading;
+    const ppd = W / 120;
+    cards.forEach(({ d, l }) => {
+      let diff = d - heading;
       while (diff > 180) diff -= 360;
       while (diff < -180) diff += 360;
       if (Math.abs(diff) > 60) return;
-
-      const px = canvasW / 2 + diff * pixPerDeg;
-      ctx.strokeStyle = label.length === 1 ? IFF.HUD.text : 'rgba(0,200,220,0.35)';
-      ctx.lineWidth = label.length === 1 ? 2 : 1;
-      ctx.beginPath(); ctx.moveTo(px, ribbonH - 6); ctx.lineTo(px, ribbonH); ctx.stroke();
-      ctx.fillStyle = label.length === 1 ? IFF.HUD.text : 'rgba(0,200,220,0.5)';
-      ctx.fillText(label, px, 13);
+      const px = W / 2 + diff * ppd;
+      ctx.strokeStyle = l.length === 1 ? IFF.HUD.text : 'rgba(0,200,220,0.4)';
+      ctx.lineWidth = l.length === 1 ? 2 : 1;
+      ctx.beginPath(); ctx.moveTo(px, rH - 7); ctx.lineTo(px, rH); ctx.stroke();
+      ctx.fillStyle = l.length === 1 ? IFF.HUD.text : 'rgba(0,200,220,0.5)';
+      ctx.fillText(l, px, 14);
     });
-
-    // Center bearing indicator
     ctx.fillStyle = IFF.HUD.text;
-    ctx.beginPath();
-    ctx.moveTo(canvasW / 2 - 5, ribbonH);
-    ctx.lineTo(canvasW / 2, ribbonH - 5);
-    ctx.lineTo(canvasW / 2 + 5, ribbonH);
-    ctx.closePath();
-    ctx.fill();
-
-    // Heading readout
-    ctx.font = 'bold 11px "Consolas", monospace';
-    ctx.fillStyle = IFF.HUD.text;
+    ctx.beginPath(); ctx.moveTo(W/2-6, rH); ctx.lineTo(W/2, rH-6); ctx.lineTo(W/2+6, rH); ctx.closePath(); ctx.fill();
+    ctx.font = 'bold 12px "Consolas", monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`${Math.round(heading)}\u00B0`, canvasW - 8, 14);
-
+    ctx.fillText(`${Math.round(heading)}\u00B0`, W - 10, 15);
     ctx.textAlign = 'start';
     ctx.restore();
   }, []);
 
-  // ── Helper: threat awareness arc ─────────────────────────────────────
-  const drawThreatRing = useCallback((ctx, canvasW, canvasH, preds) => {
+  // ── THREAT RING ──────────────────────────────────────────────────────
+  const drawThreatRing = useCallback((ctx, W, H, preds) => {
     if (!preds || preds.length === 0) return;
-    const cx = canvasW / 2;
-    const cy = canvasH / 2;
-    const radius = Math.min(canvasW, canvasH) / 2 - 4;
-
+    const cx = W / 2, cy = H / 2;
+    const r = Math.min(W, H) / 2 - 6;
     ctx.save();
-    preds.forEach(pred => {
-      const [px1, py1, px2, py2] = pred.bbox;
-      const pcx = (px1 + px2) / 2;
-      const pcy = (py1 + py2) / 2;
-      const angle = Math.atan2(pcy - cy, pcx - cx);
-      const isHomography = pred.homography_source === true;
-      const iff = isHomography ? IFF.PROJECTED : IFF.HOSTILE;
-
+    preds.forEach(p => {
+      const pcx = (p.bbox[0] + p.bbox[2]) / 2;
+      const pcy = (p.bbox[1] + p.bbox[3]) / 2;
+      const ang = Math.atan2(pcy - cy, pcx - cx);
+      const iff = p.homography_source ? IFF.PROJECTED : IFF.HOSTILE;
       ctx.strokeStyle = iff.stroke;
-      ctx.lineWidth = 3;
-      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 4;
+      ctx.globalAlpha = 0.5;
       ctx.shadowColor = iff.glow;
-      ctx.shadowBlur = 8;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, angle - 0.15, angle + 0.15);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur = 0;
+      ctx.shadowBlur = 12;
+      ctx.beginPath(); ctx.arc(cx, cy, r, ang - 0.2, ang + 0.2); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.shadowBlur = 0;
     });
     ctx.restore();
   }, []);
@@ -338,258 +270,238 @@ const CameraDisplay = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const W = canvas.width;
-    const H = canvas.height;
+    const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-
     const now = Date.now();
 
-    // ── Compass ribbon (top) ─────────────────────────────────────────
-    const heading = sensorData?.orientation?.alpha ?? null;
-    drawCompassRibbon(ctx, W, heading);
-
-    // ── Threat awareness ring ────────────────────────────────────────
+    // Compass + threat ring
+    drawCompassRibbon(ctx, W, sensorData?.orientation?.alpha ?? null);
     drawThreatRing(ctx, W, H, predictions);
 
-    // ── PHASE 1: DETECTIONS — Amber diamond + corner brackets ────────
+    // ── PHASE 1: DETECTIONS — Amber ──────────────────────────────────
     detections.forEach(det => {
       const [x1, y1, x2, y2] = det.bbox;
-      const cx = (x1 + x2) / 2;
-      const cy = (y1 + y2) / 2;
-      const bboxH = y2 - y1;
-      const dist = estimateDistance(bboxH);
+      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+      const bH = y2 - y1, dist = estimateDistance(bH);
       const iff = IFF.UNKNOWN;
 
-      // Diamond marker at center
-      drawDiamond(ctx, cx, cy, 14, iff, false);
+      // Dark tint inside bbox for contrast
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.fillRect(x1, y1, x2 - x1, bH);
+      ctx.restore();
+
+      // Skeleton
+      if (det.keypoints && det.keypoints.length >= 17)
+        drawSkeleton(ctx, det.keypoints, 'rgba(255,191,0,0.7)', 2, false);
 
       // Corner brackets
       drawCornerBrackets(ctx, x1, y1, x2, y2, iff);
 
-      // Skeleton (subtle amber)
-      if (det.keypoints && det.keypoints.length >= 17) {
-        drawSkeleton(ctx, det.keypoints, 'rgba(255,191,0,0.55)', 1.5, false);
-      }
+      // Diamond at center
+      drawDiamond(ctx, cx, cy, 18, iff, false);
 
-      // Info pill
+      // Pill
       const conf = (det.confidence * 100).toFixed(0);
-      const mainLabel = `PERSON \u00B7 ${conf}%`;
-      const subLabel = dist ? `~${dist}m` : null;
-      drawTacticalPill(ctx, cx, y1, mainLabel, subLabel, iff);
+      drawTacticalPill(ctx, cx, y1, `PERSON \u00B7 ${conf}%`, dist ? `~${dist}m` : null, iff);
     });
 
-    // ── PHASE 2: TRACKS — Blue diamond + velocity bearing ────────────
+    // ── PHASE 2: TRACKS — Blue ───────────────────────────────────────
     tracks.forEach(track => {
       const [x1, y1, x2, y2] = track.bbox;
-      const cx = (x1 + x2) / 2;
-      const cy = (y1 + y2) / 2;
-      const bboxH = y2 - y1;
-      const dist = estimateDistance(bboxH);
+      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+      const bH = y2 - y1, dist = estimateDistance(bH);
       const iff = IFF.FRIENDLY;
 
-      // Diamond marker (filled)
-      drawDiamond(ctx, cx, cy, 16, iff, true);
+      // Dark tint
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.15)';
+      ctx.fillRect(x1, y1, x2 - x1, bH);
+      ctx.restore();
 
-      // Corner brackets
+      // Skeleton
+      if (track.keypoints && track.keypoints.length >= 17)
+        drawSkeleton(ctx, track.keypoints, 'rgba(0,160,255,0.7)', 2, false);
+
+      // Brackets
       drawCornerBrackets(ctx, x1, y1, x2, y2, iff);
 
-      // Skeleton (blue, solid)
-      if (track.keypoints && track.keypoints.length >= 17) {
-        drawSkeleton(ctx, track.keypoints, 'rgba(0,160,255,0.6)', 1.5, false);
-      }
+      // Filled diamond
+      drawDiamond(ctx, cx, cy, 20, iff, true);
 
-      // Velocity bearing arrow
+      // Velocity arrow
       if (track.velocity) {
         const [vx, vy] = track.velocity;
-        const mag = Math.sqrt(vx * vx + vy * vy);
-        if (mag > 0.5) {
-          const scale = 15;
-          const endX = cx + vx * scale;
-          const endY = cy + vy * scale;
-          const angle = Math.atan2(vy, vx);
-          const arrowLen = 7;
-
+        if (Math.sqrt(vx*vx + vy*vy) > 0.3) {
+          const sc = 18, ex = cx + vx*sc, ey = cy + vy*sc;
+          const ang = Math.atan2(vy, vx), al = 9;
           ctx.save();
           ctx.strokeStyle = iff.stroke;
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2.5;
           ctx.shadowColor = iff.glow;
-          ctx.shadowBlur = 4;
+          ctx.shadowBlur = 6;
+          ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(ex, ey); ctx.stroke();
           ctx.beginPath();
-          ctx.moveTo(cx, cy);
-          ctx.lineTo(endX, endY);
-          ctx.stroke();
-
-          // Arrowhead
-          ctx.beginPath();
-          ctx.moveTo(endX, endY);
-          ctx.lineTo(endX - arrowLen * Math.cos(angle - Math.PI / 5), endY - arrowLen * Math.sin(angle - Math.PI / 5));
-          ctx.moveTo(endX, endY);
-          ctx.lineTo(endX - arrowLen * Math.cos(angle + Math.PI / 5), endY - arrowLen * Math.sin(angle + Math.PI / 5));
+          ctx.moveTo(ex, ey);
+          ctx.lineTo(ex - al*Math.cos(ang - Math.PI/5), ey - al*Math.sin(ang - Math.PI/5));
+          ctx.moveTo(ex, ey);
+          ctx.lineTo(ex - al*Math.cos(ang + Math.PI/5), ey - al*Math.sin(ang + Math.PI/5));
           ctx.stroke();
           ctx.restore();
         }
       }
 
-      // Tactical pill
-      const mainLabel = `T-${track.track_id}`;
-      const subLabel = dist ? `~${dist}m \u00B7 ${track.age || 0} hits` : `${track.age || 0} hits`;
-      drawTacticalPill(ctx, cx, y1, mainLabel, subLabel, iff);
+      // Pill
+      drawTacticalPill(ctx, cx, y1, `T-${track.track_id}`, dist ? `~${dist}m \u00B7 ${track.age||0} hits` : `${track.age||0} hits`, iff);
     });
 
-    // ── PHASE 3: PREDICTIONS / GHOSTS — Green chevron or Red chevron ─
+    // ── PHASE 3: PREDICTIONS / GHOSTS ────────────────────────────────
     predictions.forEach(pred => {
       const [x1, y1, x2, y2] = pred.bbox;
-      const cx = (x1 + x2) / 2;
-      const cy = (y1 + y2) / 2;
-      const isHomography = pred.homography_source === true;
-      const iff = isHomography ? IFF.PROJECTED : IFF.HOSTILE;
-      const methodTag = isHomography ? 'H-PROJ' : 'EXTRAP';
-      const srcCam = pred.source_camera ?? -1;
+      const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+      const bW = x2 - x1, bH = y2 - y1;
+      const isH = pred.homography_source === true;
+      const iff = isH ? IFF.PROJECTED : IFF.HOSTILE;
+      const tag = isH ? 'H-PROJ' : 'EXTRAP';
+      const src = pred.source_camera ?? -1;
 
-      // ── BLOS: if center is off-screen, draw edge-clamped chevron ───
-      const margin = 30;
-      const isOffScreen = cx < -margin || cx > W + margin || cy < -margin || cy > H + margin;
-
-      if (isOffScreen) {
-        // Clamp to viewport edge
-        const angle = Math.atan2(cy - H / 2, cx - W / 2);
-        let edgeX = Math.max(margin, Math.min(W - margin, cx));
-        let edgeY = Math.max(margin, Math.min(H - margin, cy));
-        if (cx < -margin)        edgeX = margin;
-        else if (cx > W + margin) edgeX = W - margin;
-        if (cy < -margin)        edgeY = margin;
-        else if (cy > H + margin) edgeY = H - margin;
-
-        // Draw BLOS chevron
-        drawEdgeChevron(ctx, edgeX, edgeY, angle, 14, iff);
-
-        // Small label next to chevron
+      // ── BLOS off-screen check ──────────────────────────────────
+      const isOff = cx < 0 || cx > W || cy < 0 || cy > H;
+      if (isOff) {
+        const ang = Math.atan2(cy - H/2, cx - W/2);
+        const m = 40;
+        const ex = Math.max(m, Math.min(W - m, cx));
+        const ey = Math.max(m, Math.min(H - m, cy));
+        drawEdgeChevron(ctx, ex, ey, ang, 18, iff);
+        // Label
         ctx.save();
-        ctx.font = 'bold 9px "Consolas", monospace';
+        ctx.font = 'bold 11px "Consolas", monospace';
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        const bl = `${tag} \u00B7 Cam ${src}`;
+        const btw = ctx.measureText(bl).width;
+        ctx.fillRect(ex + 22, ey - 9, btw + 10, 20);
         ctx.fillStyle = iff.stroke;
         ctx.shadowColor = iff.glow;
-        ctx.shadowBlur = 6;
-        const blosLabel = `${methodTag} \u00B7 Cam ${srcCam}`;
-        ctx.fillText(blosLabel, edgeX + 18, edgeY + 4);
+        ctx.shadowBlur = 8;
+        ctx.fillText(bl, ex + 27, ey + 5);
         ctx.restore();
-        return; // skip full overlay for off-screen predictions
+        return;
       }
 
-      // ── On-screen prediction ─────────────────────────────────────
-      const hasKeypoints = pred.keypoints && pred.keypoints.length >= 17;
+      // ── On-screen prediction — VERY VISIBLE ───────────────────
+      const hasKP = pred.keypoints && pred.keypoints.length >= 17;
+
+      // Large dark tinted bbox area
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.strokeStyle = iff.stroke;
+      ctx.lineWidth = 2;
+      ctx.shadowColor = iff.glow;
+      ctx.shadowBlur = 12;
+      if (!isH) ctx.setLineDash([6, 4]);
+      ctx.fillRect(x1, y1, bW, bH);
+      ctx.strokeRect(x1, y1, bW, bH);
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+      ctx.restore();
 
       // Ghost skeleton
-      if (hasKeypoints) {
-        drawSkeleton(ctx, pred.keypoints, iff.stroke, 2, true);
-      }
+      if (hasKP) drawSkeleton(ctx, pred.keypoints, iff.stroke, 2.5, true);
 
-      // Chevron marker (open triangle pointing up)
+      // Corner brackets
       ctx.save();
+      if (!isH) ctx.setLineDash([5, 4]);
+      drawCornerBrackets(ctx, x1, y1, x2, y2, iff);
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      // Large chevron marker with dark backdrop
+      ctx.save();
+      // Dark circle behind
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 22, 0, 2 * Math.PI);
+      ctx.fill();
+      // Chevron
       ctx.translate(cx, cy);
       ctx.strokeStyle = iff.stroke;
       ctx.fillStyle = iff.bg;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 3;
       ctx.shadowColor = iff.glow;
-      ctx.shadowBlur = 10;
-      const chevSize = 12;
+      ctx.shadowBlur = 16;
+      const cs = 16;
       ctx.beginPath();
-      ctx.moveTo(0, -chevSize);
-      ctx.lineTo(chevSize * 0.7, chevSize * 0.4);
-      ctx.lineTo(-chevSize * 0.7, chevSize * 0.4);
+      ctx.moveTo(0, -cs);
+      ctx.lineTo(cs * 0.8, cs * 0.4);
+      ctx.lineTo(-cs * 0.8, cs * 0.4);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
       ctx.restore();
 
-      // Pulsing ring
-      const pulse = Math.sin(now / 300) * 0.3 + 0.7;
+      // Pulsing ring — thick, visible
+      const pulse = Math.sin(now / 250) * 0.3 + 0.7;
       ctx.save();
       ctx.strokeStyle = iff.stroke;
-      ctx.globalAlpha = pulse * 0.5;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
+      ctx.globalAlpha = pulse * 0.7;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.arc(cx, cy, 22, 0, 2 * Math.PI);
+      ctx.arc(cx, cy, 30, 0, 2 * Math.PI);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
       ctx.restore();
 
-      // Corner brackets (dashed for extrapolation, solid for homography)
-      if (!isHomography) {
-        ctx.save();
-        ctx.setLineDash([4, 4]);
-        drawCornerBrackets(ctx, x1, y1, x2, y2, iff);
-        ctx.setLineDash([]);
-        ctx.restore();
-      } else {
-        drawCornerBrackets(ctx, x1, y1, x2, y2, iff);
-      }
-
-      // Tactical pill
+      // Pill
       const conf = (pred.confidence * 100).toFixed(0);
-      const timeAgo = pred.time_since_seen?.toFixed(1) || '?';
-      const mainLabel = `${methodTag} ${conf}%`;
-      const subLabel = srcCam >= 0 ? `Cam ${srcCam} \u00B7 ${timeAgo}s ago` : `${timeAgo}s ago`;
-      drawTacticalPill(ctx, cx, y1, mainLabel, subLabel, iff);
+      const tAgo = pred.time_since_seen?.toFixed(1) || '?';
+      drawTacticalPill(ctx, cx, y1, `${tag} ${conf}%`, src >= 0 ? `Cam ${src} \u00B7 ${tAgo}s ago` : `${tAgo}s ago`, iff);
     });
 
-    // ── HUD frame decoration (thin rule lines at edges) ──────────────
+    // ── HUD frame corners ────────────────────────────────────────────
     ctx.save();
     ctx.strokeStyle = IFF.HUD.stroke;
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.25;
-    ctx.beginPath();
-    ctx.moveTo(0, 1);     ctx.lineTo(W, 1);
-    ctx.moveTo(0, H - 1); ctx.lineTo(W, H - 1);
-    ctx.stroke();
-    // Tiny corner accents
-    const hc = 20;
     ctx.lineWidth = 2;
-    ctx.globalAlpha = 0.4;
-    ctx.beginPath(); ctx.moveTo(2, hc); ctx.lineTo(2, 2); ctx.lineTo(hc, 2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(W - hc, 2); ctx.lineTo(W - 2, 2); ctx.lineTo(W - 2, hc); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(2, H - hc); ctx.lineTo(2, H - 2); ctx.lineTo(hc, H - 2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(W - hc, H - 2); ctx.lineTo(W - 2, H - 2); ctx.lineTo(W - 2, H - hc); ctx.stroke();
+    ctx.globalAlpha = 0.5;
+    const hc = 24;
+    ctx.beginPath(); ctx.moveTo(3, hc); ctx.lineTo(3, 3); ctx.lineTo(hc, 3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W-hc, 3); ctx.lineTo(W-3, 3); ctx.lineTo(W-3, hc); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(3, H-hc); ctx.lineTo(3, H-3); ctx.lineTo(hc, H-3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W-hc, H-3); ctx.lineTo(W-3, H-3); ctx.lineTo(W-3, H-hc); ctx.stroke();
     ctx.globalAlpha = 1;
     ctx.restore();
-
     ctx.setLineDash([]);
 
   }, [detections, tracks, predictions, sensorData, drawSkeleton, drawDiamond,
       drawCornerBrackets, drawTacticalPill, drawEdgeChevron, drawCompassRibbon,
       drawThreatRing, estimateDistance]);
 
-  // ── Frame data handler ──────────────────────────────────────────────
+  // ── Frame handler ───────────────────────────────────────────────────
   useEffect(() => {
     if (!frameData || !imageRef.current) return;
     try {
       const blob = new Blob([frameData], { type: 'image/jpeg' });
-      const imageUrl = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
       const img = imageRef.current;
-
       img.onload = () => {
         if (canvasRef.current) {
-          canvasRef.current.width  = img.naturalWidth;
+          canvasRef.current.width = img.naturalWidth;
           canvasRef.current.height = img.naturalHeight;
           setDimensions({ width: img.naturalWidth, height: img.naturalHeight });
         }
         drawOverlays();
-        URL.revokeObjectURL(imageUrl);
+        URL.revokeObjectURL(url);
       };
-      img.src = imageUrl;
-    } catch (err) {
-      console.error('Frame load error:', err);
-    }
+      img.src = url;
+    } catch (e) { console.error('Frame load error:', e); }
   }, [frameData, drawOverlays]);
 
-  // Redraw when overlay data changes
   useEffect(() => { drawOverlays(); }, [drawOverlays]);
 
   // ── Render ──────────────────────────────────────────────────────────
   return (
     <div className={`camera-display ${isActive ? 'active' : 'inactive'}`}>
-      {/* Header bar */}
       <div className="camera-header">
         <div className="camera-header-left">
           <span className="cam-id">CAM-{cameraId}</span>
@@ -603,23 +515,13 @@ const CameraDisplay = ({
           <span className="hud-stat"><em>{stats.predictionsCount}</em> PRED</span>
         </div>
       </div>
-
-      {/* Viewport */}
       <div className="camera-viewport" style={{ position: 'relative' }}>
-        <img
-          ref={imageRef}
-          alt={`Camera ${cameraId}`}
-          style={{ width: '100%', height: 'auto', display: frameData ? 'block' : 'none' }}
-        />
-        <canvas
-          ref={canvasRef}
+        <img ref={imageRef} alt={`Camera ${cameraId}`}
+          style={{ width: '100%', height: 'auto', display: frameData ? 'block' : 'none' }} />
+        <canvas ref={canvasRef}
           style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: 'auto', pointerEvents: 'none' }}
-          width={dimensions.width}
-          height={dimensions.height}
-        />
-        {/* Scan-line overlay (CSS) */}
+          width={dimensions.width} height={dimensions.height} />
         {frameData && <div className="scanline-overlay" />}
-
         {!frameData && (
           <div className="no-signal">
             <div className="no-signal-content">
