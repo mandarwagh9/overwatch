@@ -294,9 +294,9 @@ function AdminDashboard() {
             <p>Fused Objects: {worldObjects.length}</p>
             <p>Pipeline: {pipelineStats.avg_tick_ms ? `${pipelineStats.avg_tick_ms}ms/tick` : 'N/A'}</p>
             {worldObjects.map(obj => (
-              <p key={obj.object_id} style={{ fontSize: '0.8em', color: '#00ffc8' }}>
-                [{obj.class_name}] T-{obj.object_id} conf:{Math.round(obj.confidence * 100)}%
-                cam:{obj.last_seen_camera}
+              <p key={obj.object_id} style={{ fontSize: '0.78em', color: '#00a0ff', letterSpacing: '0.5px' }}>
+                ◆ [{obj.class_name}] T-{obj.object_id} {Math.round(obj.confidence * 100)}%
+                · CAM-{obj.last_seen_camera}
               </p>
             ))}
           </div>

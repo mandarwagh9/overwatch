@@ -1,4 +1,8 @@
-/* Overwatch App Styles */
+/* ═══════════════════════════════════════════════════════════════════════
+   OVERWATCH — EagleEye Tactical Theme
+   Military-grade HUD aesthetic inspired by Anduril EagleEye
+   Primary accent: teal (#00c8dc)  ·  Surface: slate (#111418)
+   ═══════════════════════════════════════════════════════════════════════ */
 
 * {
   margin: 0;
@@ -6,11 +10,29 @@
   box-sizing: border-box;
 }
 
+:root {
+  --ow-bg:           #08090c;
+  --ow-surface:      #111418;
+  --ow-surface-2:    #1a1e24;
+  --ow-border:       #2a2e35;
+  --ow-border-hover: #3a3e48;
+  --ow-accent:       #00c8dc;
+  --ow-accent-dim:   rgba(0,200,220,0.35);
+  --ow-accent-glow:  rgba(0,200,220,0.25);
+  --ow-text:         #e0e4ea;
+  --ow-text-dim:     #8a8e96;
+  --ow-amber:        #ffbf00;
+  --ow-blue:         #00a0ff;
+  --ow-green:        #00ff82;
+  --ow-red:          #ff5050;
+}
+
 body {
-  font-family: 'Segoe UI', 'Roboto', sans-serif;
-  background: #0a0a0a;
-  color: #ffffff;
-  line-height: 1.6;
+  font-family: 'Consolas', 'Courier New', 'Segoe UI', monospace;
+  background: var(--ow-bg);
+  color: var(--ow-text);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 .app {
@@ -19,155 +41,219 @@ body {
   flex-direction: column;
 }
 
-/* Header */
+/* ── Header ────────────────────────────────────────────────────────────── */
 .app-header {
-  background: linear-gradient(135deg, #1a1a1a, #2d2d2d);
-  padding: 1rem 2rem;
+  background: linear-gradient(180deg, var(--ow-surface-2), var(--ow-surface));
+  padding: 0.75rem 2rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 2px solid #00ff00;
-  box-shadow: 0 2px 10px rgba(0, 255, 0, 0.3);
+  border-bottom: 1px solid var(--ow-accent-dim);
+  box-shadow: 0 1px 12px var(--ow-accent-glow);
 }
 
 .app-header h1 {
-  font-size: 2rem;
-  font-weight: bold;
-  color: #00ff00;
-  text-shadow: 0 0 10px rgba(0, 255, 0, 0.5);
-  letter-spacing: 2px;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--ow-accent);
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  text-shadow: 0 0 8px var(--ow-accent-glow);
 }
 
 .header-stats {
   display: flex;
-  gap: 2rem;
+  gap: 1.5rem;
   align-items: center;
 }
 
 .connection-status {
-  padding: 0.5rem 1rem;
-  border-radius: 20px;
-  font-weight: bold;
-  font-size: 0.9rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 1px;
+  text-transform: uppercase;
 }
 
 .connection-status.connected {
-  background: rgba(0, 255, 0, 0.2);
-  border: 1px solid #00ff00;
-  color: #00ff00;
+  background: rgba(0,255,130,0.12);
+  border: 1px solid var(--ow-green);
+  color: var(--ow-green);
 }
 
 .connection-status.disconnected {
-  background: rgba(255, 0, 0, 0.2);
-  border: 1px solid #ff0000;
-  color: #ff0000;
+  background: rgba(255,80,80,0.12);
+  border: 1px solid var(--ow-red);
+  color: var(--ow-red);
 }
 
 .system-info {
   display: flex;
-  gap: 1rem;
-  font-size: 0.9rem;
-  color: #cccccc;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--ow-text-dim);
 }
 
 .system-info span {
-  padding: 0.25rem 0.5rem;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--ow-border);
+  border-radius: 3px;
+  font-family: 'Consolas', monospace;
 }
 
-/* Error Banner */
+/* ── Error Banner ──────────────────────────────────────────────────────── */
 .error-banner {
-  background: #ff0000;
-  color: #ffffff;
-  padding: 1rem 2rem;
+  background: rgba(255,80,80,0.15);
+  border-bottom: 1px solid var(--ow-red);
+  color: var(--ow-red);
+  padding: 0.75rem 2rem;
   text-align: center;
-  font-weight: bold;
+  font-weight: 600;
+  font-size: 0.85rem;
 }
 
-/* Main Content */
+/* ── Main Content ──────────────────────────────────────────────────────── */
 .app-main {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 300px;
-  gap: 2rem;
-  padding: 2rem;
+  grid-template-columns: 1fr 280px;
+  gap: 1.5rem;
+  padding: 1.5rem;
 }
 
-/* Camera Grid */
+/* ── Camera Grid ───────────────────────────────────────────────────────── */
 .camera-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 1.5rem;
+  gap: 1rem;
 }
 
 .camera-container {
-  background: #1a1a1a;
-  border-radius: 8px;
+  background: var(--ow-surface);
+  border-radius: 4px;
   overflow: hidden;
-  border: 2px solid #333;
-  transition: all 0.3s ease;
+  border: 1px solid var(--ow-border);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .camera-container:hover {
-  border-color: #00ff00;
-  box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+  border-color: var(--ow-accent-dim);
+  box-shadow: 0 0 16px var(--ow-accent-glow);
 }
 
-/* Camera Display */
+/* ── Camera Display ────────────────────────────────────────────────────── */
 .camera-display {
   height: 100%;
 }
 
 .camera-display.active {
-  border-left: 4px solid #00ff00;
+  border-left: 3px solid var(--ow-accent);
 }
 
 .camera-display.inactive {
-  border-left: 4px solid #666;
+  border-left: 3px solid var(--ow-border);
 }
 
+/* ── Camera Header (new EagleEye style) ────────────────────────────────── */
 .camera-header {
-  background: #2d2d2d;
-  padding: 0.75rem 1rem;
+  background: var(--ow-surface-2);
+  padding: 0.5rem 0.85rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #444;
+  border-bottom: 1px solid var(--ow-border);
 }
 
-.camera-header h3 {
-  color: #ffffff;
-  font-size: 1.1rem;
-  font-weight: 600;
+.camera-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
 }
 
+.cam-id {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--ow-text);
+  letter-spacing: 1.5px;
+}
+
+.status-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 0.15rem 0.45rem;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.status-badge.live {
+  background: rgba(0,255,130,0.15);
+  color: var(--ow-green);
+  border: 1px solid rgba(0,255,130,0.3);
+}
+
+.status-badge.off {
+  background: rgba(255,255,255,0.05);
+  color: var(--ow-text-dim);
+  border: 1px solid var(--ow-border);
+}
+
+.camera-header-right {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.hud-stat {
+  font-size: 0.7rem;
+  color: var(--ow-text-dim);
+  letter-spacing: 0.5px;
+}
+
+.hud-stat em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--ow-accent);
+  margin-right: 2px;
+}
+
+/* Legacy camera-stats (keep for backward compat) */
 .camera-stats {
   display: flex;
-  gap: 1rem;
-  font-size: 0.8rem;
-  color: #cccccc;
+  gap: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--ow-text-dim);
 }
 
 .camera-stats .status {
-  font-weight: bold;
+  font-weight: 700;
 }
 
 .camera-stats .status.online {
-  color: #00ff00;
+  color: var(--ow-green);
 }
 
 .camera-stats .status.offline {
-  color: #ff0000;
+  color: var(--ow-red);
 }
 
+.camera-header h3 {
+  color: var(--ow-text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+/* ── Camera Viewport ───────────────────────────────────────────────────── */
 .camera-viewport {
   aspect-ratio: 16/9;
-  background: #000000;
+  background: #000;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  position: relative;
 }
 
 .camera-viewport img {
@@ -176,127 +262,178 @@ body {
   object-fit: contain;
 }
 
+/* ── Scan-line Overlay ─────────────────────────────────────────────────── */
+.scanline-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 200, 220, 0.015) 2px,
+    rgba(0, 200, 220, 0.015) 4px
+  );
+  z-index: 2;
+}
+
+/* ── No Signal ─────────────────────────────────────────────────────────── */
 .no-signal {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
-  background: #111111;
+  background: var(--ow-surface);
 }
 
 .no-signal-content {
   text-align: center;
-  color: #666666;
 }
 
+.no-signal-icon {
+  font-size: 2.5rem;
+  color: var(--ow-accent-dim);
+  margin-bottom: 0.5rem;
+  animation: pulse-diamond 2.5s ease-in-out infinite;
+}
+
+.no-signal-cam {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ow-text-dim);
+  letter-spacing: 2px;
+  margin: 0.3rem 0;
+}
+
+.no-signal-msg {
+  font-size: 0.75rem;
+  color: var(--ow-border-hover);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+/* Legacy no-signal-content spans */
 .no-signal-content span {
-  font-size: 3rem;
+  font-size: 2.5rem;
   display: block;
-  margin-bottom: 1rem;
-  opacity: 0.5;
+  margin-bottom: 0.8rem;
+  opacity: 0.35;
 }
 
 .no-signal-content p {
-  margin: 0.5rem 0;
-  font-size: 0.9rem;
+  margin: 0.3rem 0;
+  font-size: 0.8rem;
+  color: var(--ow-text-dim);
 }
 
-/* Camera Controls */
+/* ── Camera Controls ───────────────────────────────────────────────────── */
 .camera-controls {
-  background: #2d2d2d;
-  padding: 0.75rem 1rem;
+  background: var(--ow-surface-2);
+  padding: 0.5rem 0.85rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-top: 1px solid #444;
+  border-top: 1px solid var(--ow-border);
 }
 
 .control-btn {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 4px;
-  font-weight: bold;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--ow-border);
+  border-radius: 3px;
+  font-weight: 700;
   cursor: pointer;
   transition: all 0.2s ease;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
+  font-family: 'Consolas', monospace;
+  letter-spacing: 0.5px;
 }
 
 .control-btn.start {
-  background: #00ff00;
-  color: #000000;
+  background: rgba(0,255,130,0.12);
+  color: var(--ow-green);
+  border-color: rgba(0,255,130,0.3);
 }
 
 .control-btn.start:hover {
-  background: #00cc00;
-  transform: translateY(-1px);
+  background: rgba(0,255,130,0.22);
+  box-shadow: 0 0 10px rgba(0,255,130,0.2);
 }
 
 .control-btn.stop {
-  background: #ff4444;
-  color: #ffffff;
+  background: rgba(255,80,80,0.12);
+  color: var(--ow-red);
+  border-color: rgba(255,80,80,0.3);
 }
 
 .control-btn.stop:hover {
-  background: #cc0000;
-  transform: translateY(-1px);
+  background: rgba(255,80,80,0.22);
+  box-shadow: 0 0 10px rgba(255,80,80,0.2);
 }
 
 .fps-display {
-  font-size: 0.9rem;
-  color: #00ff00;
-  font-weight: bold;
-  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--ow-accent);
+  font-weight: 700;
+  font-family: 'Consolas', monospace;
 }
 
-/* Stats Panel */
+/* ── Stats Panel ───────────────────────────────────────────────────────── */
 .stats-panel {
-  background: #1a1a1a;
-  border-radius: 8px;
-  padding: 1.5rem;
-  border: 2px solid #333;
+  background: var(--ow-surface);
+  border-radius: 4px;
+  padding: 1.25rem;
+  border: 1px solid var(--ow-border);
   overflow-y: auto;
-  max-height: calc(100vh - 120px);
+  max-height: calc(100vh - 100px);
 }
 
 .stats-panel h3 {
-  color: #00ff00;
-  margin-bottom: 1.5rem;
-  font-size: 1.3rem;
-  border-bottom: 2px solid #00ff00;
-  padding-bottom: 0.5rem;
+  color: var(--ow-accent);
+  margin-bottom: 1.25rem;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  border-bottom: 1px solid var(--ow-accent-dim);
+  padding-bottom: 0.4rem;
+  text-transform: uppercase;
 }
 
 .stat-section {
-  margin-bottom: 1.5rem;
-  padding: 1rem;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 6px;
-  border-left: 3px solid #00ff00;
+  margin-bottom: 1.25rem;
+  padding: 0.85rem;
+  background: rgba(255,255,255,0.02);
+  border-radius: 4px;
+  border-left: 2px solid var(--ow-accent-dim);
 }
 
 .stat-section h4 {
-  color: #ffffff;
-  margin-bottom: 0.5rem;
-  font-size: 1rem;
+  color: var(--ow-text);
+  margin-bottom: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
 }
 
 .stat-section p {
-  margin: 0.25rem 0;
-  font-size: 0.9rem;
-  color: #cccccc;
-  font-family: monospace;
+  margin: 0.2rem 0;
+  font-size: 0.8rem;
+  color: var(--ow-text-dim);
+  font-family: 'Consolas', monospace;
 }
 
-/* Responsive Design */
+/* ── Responsive ────────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .app-main {
     grid-template-columns: 1fr;
   }
-  
+
   .stats-panel {
     order: -1;
-    max-height: 200px;
+    max-height: 180px;
   }
 }
 
@@ -304,48 +441,55 @@ body {
   .camera-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .app-header {
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
   }
-  
+
   .header-stats {
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.75rem;
   }
-  
+
   .system-info {
     flex-wrap: wrap;
     justify-content: center;
   }
 }
 
-/* Animation Effects */
+/* ── Animations ────────────────────────────────────────────────────────── */
 @keyframes pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%   { opacity: 1; }
+  50%  { opacity: 0.4; }
   100% { opacity: 1; }
 }
 
-.camera-display.inactive .camera-header {
-  animation: pulse 2s infinite;
+@keyframes pulse-diamond {
+  0%   { opacity: 0.3; transform: scale(1); }
+  50%  { opacity: 0.6; transform: scale(1.1); }
+  100% { opacity: 0.3; transform: scale(1); }
 }
 
-/* Custom Scrollbar */
+.camera-display.inactive .camera-header {
+  animation: pulse 2.5s ease-in-out infinite;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────── */
 .stats-panel::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
 }
 
 .stats-panel::-webkit-scrollbar-track {
-  background: #2d2d2d;
+  background: var(--ow-surface-2);
 }
 
 .stats-panel::-webkit-scrollbar-thumb {
-  background: #00ff00;
+  background: var(--ow-accent-dim);
   border-radius: 3px;
 }
 
 .stats-panel::-webkit-scrollbar-thumb:hover {
-  background: #00cc00;
+  background: var(--ow-accent);
 }

@@ -109,11 +109,22 @@ class PerceptionPipeline:
         # 1. Grab latest frames from all cameras (physical + virtual)
         camera_frames = self.camera_manager.get_all_frames()
 
+        # Debug: log periodically how many frames we got
+        if self._tick_count % 100 == 0:
+            n_phys = len(self.camera_manager.cameras)
+            n_virt = len(self.camera_manager.virtual_cameras)
+            print(f"🔍 Tick {self._tick_count}: {len(camera_frames)} frames (phys={n_phys}, virt={n_virt})")
+
         # 2. Detect (runs ONCE, not per viewer)
         detection_results = (
             await self.detection_engine.process_frames(camera_frames)
             if camera_frames else []
         )
+
+        # Debug: log detection counts periodically
+        if camera_frames and self._tick_count % 100 == 0:
+            total_dets = sum(len(dr.detections) for dr in detection_results)
+            print(f"🔍 Tick {self._tick_count}: {total_dets} detections across {len(detection_results)} cameras")
 
         # 3. Track
         tracking_results = []
