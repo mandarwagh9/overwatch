@@ -37,6 +37,9 @@ class WorldObject:
     last_update: float
     prediction_confidence: float = 1.0
     source_tracks: Dict[int, int] = field(default_factory=dict)  # camera_id -> track_id
+    position_uncertainty: Tuple[float, float, float] = (1.0, 1.0, 1.0)  # from KF P diagonal
+    bbox_size: Tuple[float, float] = (0.0, 0.0)  # last known w, h in pixels
+    feature_vector: object = None  # appearance descriptor for cross-camera re-ID (np.ndarray)
 
 
 @dataclass
@@ -188,6 +191,9 @@ class WorldModel:
         self.object_history: Dict[int, deque] = defaultdict(lambda: deque(maxlen=20))
         self.prediction_horizon = 5.0  # seconds
         
+        # Per-sensor trust scores (camera_id -> trust in [0.1, 1.0])
+        self.sensor_trust: Dict[int, float] = defaultdict(lambda: 1.0)
+        
         self.stats = {
             'objects_tracked': 0,
             'fused_objects': 0,
@@ -241,10 +247,19 @@ class KalmanFilter:
         self.x = F.dot(self.x)
         self.P = F.dot(self.P).dot(F.T) + Q
 
-    def update(self, meas_pos: Tuple[float, float, float]):
+    def update(self, meas_pos: Tuple[float, float, float],
+               confidence: float = 1.0, bbox_area: float = 10000.0,
+               sensor_trust: float = 1.0):
+        """Update with measurement.  R is scaled inversely by detection quality
+        AND sensor trust, so unreliable sensors influence the filter less."""
+        # Adaptive measurement noise
+        quality = max(confidence, 0.1) * min(1.0, bbox_area / 5000.0) * max(sensor_trust, 0.1)
+        noise_scale = np.clip(0.5 / quality, 0.1, 10.0)
+        R_adaptive = self.R * noise_scale
+
         z = np.array(meas_pos, dtype=float).reshape((3, 1))
         y = z - self.H.dot(self.x)
-        S = self.H.dot(self.P).dot(self.H.T) + self.R
+        S = self.H.dot(self.P).dot(self.H.T) + R_adaptive
         K = self.P.dot(self.H.T).dot(np.linalg.inv(S))
         self.x = self.x + K.dot(y)
         I = np.eye(6)
@@ -327,8 +342,9 @@ async def _wm_process_camera_tracks(self, tracking_result: TrackingResult, curre
             object_id = self.track_to_object_mapping[track_key]
             await self._update_existing_object(object_id, track, world_pos, current_time)
         else:
-            # Check for nearby objects that might be the same
-            object_id = self._find_matching_object(world_pos, track.class_id, current_time)
+            # Check for nearby objects that might be the same (cross-camera re-ID)
+            fv = getattr(track, 'feature_vector', None)
+            object_id = self._find_matching_object(world_pos, track.class_id, current_time, feature_vector=fv)
             if object_id:
                 self.track_to_object_mapping[track_key] = object_id
                 await self._update_existing_object(object_id, track, world_pos, current_time)
@@ -337,21 +353,36 @@ async def _wm_process_camera_tracks(self, tracking_result: TrackingResult, curre
                 await self._create_new_object(track_key, track, world_pos, current_time)
 
 async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tuple[float, float, float], current_time: float):
-    """Update an existing world object"""
+    """Update an existing world object with adaptive KF and appearance EMA."""
     if object_id not in self.world_objects:
         return
     
     obj = self.world_objects[object_id]
+    bbox_area = max(1.0, (track.bbox[2] - track.bbox[0]) * (track.bbox[3] - track.bbox[1]))
+
+    # Get sensor trust for this camera
+    cam_trust = self.sensor_trust[track.camera_id]
+
     # Use Kalman filter when available to smooth and update state
     if object_id in self.kalman_filters:
         kf = self.kalman_filters[object_id]
         # Predict to current time delta
         dt = max(1e-3, current_time - obj.last_update)
         kf.predict(dt)
-        # Update with measurement
-        kf.update(world_pos)
+        # Adaptive update — confidence, bbox area, and sensor trust scale measurement noise
+        kf.update(world_pos, confidence=track.confidence, bbox_area=bbox_area, sensor_trust=cam_trust)
         obj.world_position = kf.current_position()
         obj.velocity = kf.current_velocity()
+        # Expose KF covariance as position uncertainty
+        P_diag = np.diag(kf.P)
+        obj.position_uncertainty = (float(P_diag[0]), float(P_diag[1]), float(P_diag[2]))
+        
+        # Update sensor trust: check if this measurement is consistent with the predicted state
+        innovation = np.sqrt(sum((a - b)**2 for a, b in zip(world_pos, kf.current_position())))
+        if innovation < 1.0:  # consistent measurement
+            self.sensor_trust[track.camera_id] = min(1.0, cam_trust + 0.005)
+        else:  # inconsistent — decay trust
+            self.sensor_trust[track.camera_id] = max(0.1, cam_trust - 0.01)
     else:
         # Fallback velocity estimate
         time_delta = current_time - obj.last_update
@@ -374,6 +405,20 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
 
     # Update source tracks
     obj.source_tracks[track.camera_id] = track.track_id
+
+    # Update bbox size
+    obj.bbox_size = (float(track.bbox[2] - track.bbox[0]), float(track.bbox[3] - track.bbox[1]))
+
+    # Update appearance feature (exponential moving average for re-ID stability)
+    fv = getattr(track, 'feature_vector', None)
+    if fv is not None:
+        if obj.feature_vector is None:
+            obj.feature_vector = fv.copy()
+        else:
+            alpha = 0.3  # blend new observation with running descriptor
+            obj.feature_vector = alpha * fv + (1 - alpha) * obj.feature_vector
+            norm = np.linalg.norm(obj.feature_vector) + 1e-6
+            obj.feature_vector = obj.feature_vector / norm
 
     # Store in history
     self.object_history[object_id].append({
@@ -398,7 +443,9 @@ async def _wm_create_new_object(self, track_key: Tuple[int, int], track, world_p
         confidence=track.confidence,
         last_seen_camera=track.camera_id,
         last_update=current_time,
-        source_tracks={track.camera_id: track.track_id}
+        source_tracks={track.camera_id: track.track_id},
+        bbox_size=(float(track.bbox[2] - track.bbox[0]), float(track.bbox[3] - track.bbox[1])),
+        feature_vector=getattr(track, 'feature_vector', None),
     )
     
     self.world_objects[object_id] = new_object
@@ -412,11 +459,12 @@ async def _wm_create_new_object(self, track_key: Tuple[int, int], track, world_p
     self.track_to_object_mapping[track_key] = object_id
     self.stats['objects_tracked'] += 1
 
-def _wm_find_matching_object(self, world_pos: Tuple[float, float, float], class_id: int, current_time: float) -> Optional[int]:
-    """Find existing object that might match this position"""
-    min_distance = float('inf')
+def _wm_find_matching_object(self, world_pos: Tuple[float, float, float], class_id: int, current_time: float, feature_vector=None) -> Optional[int]:
+    """Find existing object that might match this position, using spatial proximity
+    refined by appearance similarity when feature vectors are available."""
+    min_score = float('inf')
     best_match = None
-    threshold = 2.0  # 2 meter threshold
+    threshold = 2.0  # 2 meter spatial gate
     
     for object_id, obj in self.world_objects.items():
         if obj.class_id != class_id:
@@ -426,14 +474,27 @@ def _wm_find_matching_object(self, world_pos: Tuple[float, float, float], class_
         if current_time - obj.last_update < 0.1:  # 100ms
             continue
         
-        distance = np.sqrt(
+        spatial_dist = np.sqrt(
             (obj.world_position[0] - world_pos[0])**2 +
             (obj.world_position[1] - world_pos[1])**2 +
             (obj.world_position[2] - world_pos[2])**2
         )
         
-        if distance < min_distance and distance < threshold:
-            min_distance = distance
+        if spatial_dist >= threshold:
+            continue
+        
+        # Normalised spatial score (0 = perfect, 1 = at threshold)
+        score = spatial_dist / threshold
+        
+        # Refine with appearance similarity when both descriptors exist
+        if (feature_vector is not None and
+                obj.feature_vector is not None):
+            cosine_sim = float(np.dot(feature_vector, obj.feature_vector))
+            appearance_score = 1.0 - cosine_sim  # 0 = identical
+            score = 0.5 * score + 0.5 * appearance_score
+        
+        if score < min_score:
+            min_score = score
             best_match = object_id
     
     return best_match
