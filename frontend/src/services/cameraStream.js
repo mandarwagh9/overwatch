@@ -33,6 +33,12 @@ export class CameraStreamService {
       fpsCounter: 0
     };
 
+    // Sensor fusion: GPS + IMU
+    this._geoWatchId = null;
+    this._lastGps = null;
+    this._lastOrientation = null;
+    this._sensorIntervalId = null;
+
     // Callbacks
     this.onStatusChange = null;
     this.onError = null;
@@ -108,6 +114,7 @@ export class CameraStreamService {
     this.stats.startTime = Date.now();
     this.stats.lastFpsUpdate = Date.now();
     this._startCaptureLoop();
+    this._startSensorCapture();
     this._emitStatus('streaming');
 
     return this.cameraId;
@@ -246,10 +253,100 @@ export class CameraStreamService {
   }
 
   /**
+   * Start capturing GPS + device orientation and sending as sensor_data messages.
+   */
+  _startSensorCapture() {
+    // GPS via Geolocation API
+    if ('geolocation' in navigator) {
+      try {
+        this._geoWatchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            this._lastGps = {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              altitude: pos.coords.altitude,
+              accuracy: pos.coords.accuracy,
+            };
+          },
+          (err) => console.warn('GPS error:', err.message),
+          { enableHighAccuracy: true, maximumAge: 1000, timeout: 5000 }
+        );
+      } catch (e) {
+        console.warn('Geolocation not available:', e);
+      }
+    }
+
+    // IMU via DeviceOrientation API
+    const handleOrientation = (event) => {
+      this._lastOrientation = {
+        alpha: event.alpha,  // compass heading (0-360)
+        beta: event.beta,    // front-back tilt (-180 to 180)
+        gamma: event.gamma,  // left-right tilt (-90 to 90)
+      };
+    };
+
+    if (typeof DeviceOrientationEvent !== 'undefined') {
+      // iOS 13+ requires permission
+      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+          .then(state => {
+            if (state === 'granted') {
+              window.addEventListener('deviceorientation', handleOrientation, true);
+            }
+          })
+          .catch(console.warn);
+      } else {
+        window.addEventListener('deviceorientation', handleOrientation, true);
+      }
+    }
+    this._orientationHandler = handleOrientation;
+
+    // Send sensor data at 2 Hz (GPS updates are slow, no need to spam)
+    this._sensorIntervalId = setInterval(() => {
+      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+      if (!this._lastGps && !this._lastOrientation) return;
+
+      const msg = {
+        type: 'sensor_data',
+        timestamp: Date.now(),
+      };
+      if (this._lastGps) msg.gps = this._lastGps;
+      if (this._lastOrientation) msg.orientation = this._lastOrientation;
+
+      try {
+        this.socket.send(JSON.stringify(msg));
+      } catch (e) { /* ignore */ }
+    }, 500);
+  }
+
+  /**
+   * Stop sensor capture and clean up listeners.
+   */
+  _stopSensorCapture() {
+    if (this._geoWatchId !== null) {
+      navigator.geolocation.clearWatch(this._geoWatchId);
+      this._geoWatchId = null;
+    }
+    if (this._sensorIntervalId) {
+      clearInterval(this._sensorIntervalId);
+      this._sensorIntervalId = null;
+    }
+    if (this._orientationHandler) {
+      window.removeEventListener('deviceorientation', this._orientationHandler, true);
+      this._orientationHandler = null;
+    }
+    this._lastGps = null;
+    this._lastOrientation = null;
+  }
+
+  /**
    * Stop streaming and clean up all resources.
    */
   stop() {
     this.isStreaming = false;
+
+    // Stop sensor capture
+    this._stopSensorCapture();
 
     // Stop capture loop
     if (this.captureIntervalId) {

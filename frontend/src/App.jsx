@@ -24,6 +24,8 @@ function AdminDashboard() {
   const [cameraData, setCameraData] = useState({});
   const [connectionStats, setConnectionStats] = useState({});
   const [error, setError] = useState(null);
+  const [worldObjects, setWorldObjects] = useState([]);
+  const [pipelineStats, setPipelineStats] = useState({});
   
   // Refs for performance tracking
   const frameCounterRef = useRef({});
@@ -80,6 +82,12 @@ function AdminDashboard() {
     // Handle prediction messages
     websocketService.on('predictions', (data) => {
       handlePredictionMessage(data);
+    });
+
+    // Handle world_update messages (fused 3D world objects from perception pipeline)
+    websocketService.on('world_update', (data) => {
+      setWorldObjects(data.objects || []);
+      if (data.pipeline_stats) setPipelineStats(data.pipeline_stats);
     });
 
     // Handle status messages
@@ -279,6 +287,18 @@ function AdminDashboard() {
             <h4>Tracking</h4>
             <p>Active: {systemStats.tracking_active ? '✅ Yes' : '❌ No'}</p>
             <p>Mode: CPU Optimized</p>
+          </div>
+
+          <div className="stat-section">
+            <h4>World Model</h4>
+            <p>Fused Objects: {worldObjects.length}</p>
+            <p>Pipeline: {pipelineStats.avg_tick_ms ? `${pipelineStats.avg_tick_ms}ms/tick` : 'N/A'}</p>
+            {worldObjects.map(obj => (
+              <p key={obj.object_id} style={{ fontSize: '0.8em', color: '#00ffc8' }}>
+                [{obj.class_name}] T-{obj.object_id} conf:{Math.round(obj.confidence * 100)}%
+                cam:{obj.last_seen_camera}
+              </p>
+            ))}
           </div>
 
           <div className="stat-section">
