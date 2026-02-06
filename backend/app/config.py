@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     mobile_camera_fps: int = 15  # Target FPS for mobile camera streams
     mobile_camera_quality: int = 50  # JPEG quality for mobile re-encoding
     mobile_camera_max_width: int = 640  # Max frame width from mobile
+    
+    # Authentication
+    jwt_secret: str = "overwatch-jwt-secret-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 1440  # 24 hours
+    auth_enabled: bool = False  # Set True to require JWT for WebSocket connections
+    
+    # Trust scoring
+    trust_decay_rate: float = 0.01  # Per-inconsistency trust decay
+    trust_min: float = 0.1  # Minimum trust floor (never fully ignore a sensor)
 
 
 # Global settings instance

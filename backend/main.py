@@ -33,15 +33,17 @@ detection_engine = DetectionEngine()
 tracking_manager = TrackingManager()
 world_model = WorldModel()
 websocket_manager = None
+pipeline = None  # PerceptionPipeline (shared singleton)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan management"""
-    global websocket_manager
+    global websocket_manager, pipeline
     
     # Import WebSocketManager after globals are defined
     from app.api.websocket_handler import WebSocketManager
+    from app.core.perception_pipeline import PerceptionPipeline
     websocket_manager = WebSocketManager()
     
     # Set manager references
@@ -66,12 +68,19 @@ async def lifespan(app: FastAPI):
     await camera_manager.start()
     print("✅ Camera manager started")
     
+    # Start the shared perception pipeline (detect→track→fuse runs ONCE per tick)
+    pipeline = PerceptionPipeline(camera_manager, detection_engine, tracking_manager, world_model)
+    websocket_manager.set_pipeline(pipeline)
+    await pipeline.start()
+    print("✅ Perception pipeline started")
+    
     print(f"🎯 Overwatch ready - listening on {settings.host}:{settings.port}")
     
     yield
     
     # Shutdown
     print("🛑 Shutting down Overwatch system...")
+    await pipeline.stop()
     await camera_manager.stop()
     await detection_engine.cleanup()
     print("✅ Shutdown complete")
@@ -100,9 +109,37 @@ async def root():
     """Health check endpoint"""
     return {
         "message": "Overwatch API is running",
-        "version": "1.0.0",
-        "status": "operational"
+        "version": "2.0.0",
+        "status": "operational",
+        "capabilities": [
+            "perception_pipeline",
+            "hungarian_tracking",
+            "adaptive_kalman",
+            "appearance_reid",
+            "gps_imu_fusion",
+            "world_update_broadcast",
+        ]
     }
+
+
+@app.post("/api/token")
+async def create_token(node_id: str = "anonymous", role: str = "viewer"):
+    """Issue a JWT for WebSocket authentication.
+    
+    In production, this should require credentials.
+    Currently issues tokens for any node_id/role for development.
+    """
+    import jwt
+    from datetime import datetime, timedelta
+    
+    payload = {
+        "node_id": node_id,
+        "role": role,  # "viewer" or "camera_source"
+        "iat": datetime.utcnow(),
+        "exp": datetime.utcnow() + timedelta(minutes=settings.jwt_expire_minutes),
+    }
+    token = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return {"token": token, "expires_in": settings.jwt_expire_minutes * 60}
 
 
 @app.get("/status")
