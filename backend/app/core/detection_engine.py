@@ -35,6 +35,7 @@ class Detection:
     class_id: int
     class_name: str
     center: Tuple[float, float]  # x, y center point
+    feature_vector: object = None  # appearance descriptor (np.ndarray or None)
 
 
 @dataclass
@@ -190,12 +191,16 @@ class YOLODetector:
                         center_x = (x1 + x2) / 2
                         center_y = (y1 + y2) / 2
                         
+                        # Compute lightweight appearance descriptor
+                        feat = self._compute_appearance_feature(frame, (x1, y1, x2, y2))
+                        
                         detection = Detection(
                             bbox=(float(x1), float(y1), float(x2), float(y2)),
                             confidence=float(conf),
                             class_id=int(cls_id),
                             class_name=self.class_names.get(cls_id, 'person'),
-                            center=(float(center_x), float(center_y))
+                            center=(float(center_x), float(center_y)),
+                            feature_vector=feat,
                         )
                         detections.append(detection)
             
@@ -205,6 +210,34 @@ class YOLODetector:
             print(f"❌ Detection error: {e}")
             return []
     
+    def _compute_appearance_feature(self, frame: np.ndarray, bbox: Tuple) -> Optional[np.ndarray]:
+        """Compute lightweight HSV histogram appearance descriptor (64-dim, L2-normalised).
+        
+        Fast to compute (~0.1ms), discriminative enough for cross-camera re-ID
+        of tracked persons without requiring an additional neural network.
+        """
+        try:
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            h, w = frame.shape[:2]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            if x2 <= x1 or y2 <= y1:
+                return None
+
+            crop = frame[y1:y2, x1:x2]
+            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+
+            # 32 hue bins + 16 saturation bins + 16 value bins = 64-dim
+            hist_h = cv2.calcHist([hsv], [0], None, [32], [0, 180]).flatten()
+            hist_s = cv2.calcHist([hsv], [1], None, [16], [0, 256]).flatten()
+            hist_v = cv2.calcHist([hsv], [2], None, [16], [0, 256]).flatten()
+
+            feature = np.concatenate([hist_h, hist_s, hist_v])
+            norm = np.linalg.norm(feature) + 1e-6
+            return (feature / norm).astype(np.float32)
+        except Exception:
+            return None
+
     def _mock_detection(self, frame: np.ndarray) -> List[Detection]:
         """Mock person-only detection for development/testing"""
         height, width = frame.shape[:2]
