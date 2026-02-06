@@ -4,7 +4,7 @@ import json
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('192.168.1.12', username='mandar', password='mandar', timeout=15)
+c.connect('192.168.1.4', username='mandar', password='mandar', timeout=15)
 
 def run(cmd):
     si, so, se = c.exec_command(cmd, timeout=30)

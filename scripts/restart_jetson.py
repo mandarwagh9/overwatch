@@ -3,7 +3,7 @@ import paramiko, time
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('192.168.1.12', username='mandar', password='mandar', timeout=15)
+c.connect('192.168.1.4', username='mandar', password='mandar', timeout=15)
 print('Connected')
 
 def run(cmd, t=60):

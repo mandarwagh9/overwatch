@@ -1,7 +1,7 @@
 """Deploy Overwatch v2.0 (multi-agent perception) to Jetson Orin Nano."""
 import paramiko, time, os
 
-JETSON_IP = '192.168.1.12'
+JETSON_IP = '192.168.1.4'
 JETSON_USER = 'mandar'
 JETSON_PASS = 'mandar'
 REMOTE_BASE = '/home/mandar/OVERWATCH/backend'

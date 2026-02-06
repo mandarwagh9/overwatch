@@ -9,7 +9,7 @@ import sys
 import time
 import stat
 
-JETSON_HOST = "192.168.1.12"
+JETSON_HOST = "192.168.1.4"
 JETSON_USER = "mandar"
 JETSON_PASS = "mandar"
 LOCAL_PROJECT = r"C:\OVERWATCH"
@@ -213,13 +213,13 @@ PORT=8000
     if "NOT RESPONDING" not in out:
         print("\n" + "=" * 60)
         print("🎉 OVERWATCH backend is LIVE on Jetson Orin Nano!")
-        print(f"   Backend URL: https://192.168.1.12:8000")
-        print(f"   Mobile cam:  https://192.168.1.12:8000/mobile")
+        print(f"   Backend URL: https://192.168.1.4:8000")
+        print(f"   Mobile cam:  https://192.168.1.4:8000/mobile")
         print(f"   Model: {model_path}")
         print("=" * 60)
     else:
         print("\n⚠ Backend may still be starting up. Check with:")
-        print(f"   ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'")
+        print(f"   ssh mandar@192.168.1.4 'tail -50 /tmp/overwatch.log'")
 
     client.close()
     print("\n🔌 SSH disconnected. Done!")
