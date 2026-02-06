@@ -597,29 +597,21 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
         if time_since_seen > self.prediction_horizon:
             continue
 
-        # ── Determine predicted pixel position ─────────────────────
-        if camera_id in obj.camera_pixel_positions:
-            # Best case: object was previously seen on THIS camera
-            last_pos = obj.camera_pixel_positions[camera_id]
-            pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
-            frames_elapsed = time_since_seen * settings.target_fps
-            predicted_pixel = (
-                last_pos[0] + pv[0] * frames_elapsed,
-                last_pos[1] + pv[1] * frames_elapsed,
-            )
-            bw, bh = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
-        else:
-            # Object was never seen by this camera — try world→pixel
-            if object_id in self.kalman_filters:
-                wpos = self.kalman_filters[object_id].predict_future(time_since_seen)
-            else:
-                wpos = tuple(p + v * time_since_seen for p, v in zip(obj.world_position, obj.velocity))
-            pp = self.coordinate_transform.world_to_pixel(camera_id, wpos)
-            if pp is not None and 0 <= pp[0] <= fw and 0 <= pp[1] <= fh:
-                predicted_pixel = pp
-            else:
-                # Fallback: place ghost at centre of frame
-                predicted_pixel = (fw / 2.0, fh / 2.0)
+        # ── Only predict for objects THIS camera previously tracked ──
+        # If this camera never saw the person, we have no pixel-space
+        # data to place them — skip to avoid false ghost predictions.
+        if camera_id not in obj.camera_pixel_positions:
+            continue
+
+        last_pos = obj.camera_pixel_positions[camera_id]
+        pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
+        frames_elapsed = time_since_seen * settings.target_fps
+        predicted_pixel = (
+            last_pos[0] + pv[0] * frames_elapsed,
+            last_pos[1] + pv[1] * frames_elapsed,
+        )
+        bw, bh = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
+        if bw == 0 and bh == 0:
             bw, bh = obj.bbox_size if obj.bbox_size != (0.0, 0.0) else (100.0, 200.0)
 
         if bw < 10:

@@ -159,19 +159,8 @@ class PerceptionPipeline:
             }
             snap.camera_packets[cf.camera_id] = msgpack.packb(msg, use_bin_type=True)
 
-        # 5b. Prediction packets for cameras with no current frame
-        active_ids = {cf.camera_id for cf in camera_frames}
-        for cam_id in range(settings.max_cameras):
-            if cam_id not in active_ids:
-                preds = self.world_model.generate_predictions_for_camera(cam_id, now)
-                if preds:
-                    msg = {
-                        'type': 'predictions',
-                        'camera_id': cam_id,
-                        'timestamp': now,
-                        'predictions': [_ser_pred(p) for p in preds],
-                    }
-                    snap.prediction_packets[cam_id] = msgpack.packb(msg, use_bin_type=True)
+        # 5b. (Disabled) No prediction packets for offline cameras —
+        #     no video feed = no canvas to overlay predictions on.
 
         # 5c. World-objects update
         world_objs = self._build_world_objects(now)
