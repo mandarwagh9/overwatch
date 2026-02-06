@@ -1,116 +1,117 @@
-# 🎯 OVERWATCH
+<p align="center">
+  <img src="https://img.shields.io/badge/OVERWATCH-v2.0.0-00ffc8?style=for-the-badge&labelColor=0a0a0a" alt="Version" />
+  <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/react-18-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/TensorRT-FP16-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="TensorRT" />
+  <img src="https://img.shields.io/badge/Jetson_Orin_Nano-Edge-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="Jetson" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge" alt="License" />
+</p>
 
-**Real-time multi-agent collaborative perception system with multi-camera tracking, AI-powered sensor fusion, and augmented reality visualization.**
+<h1 align="center">🎯 OVERWATCH</h1>
 
-Built on a Python/FastAPI backend with YOLOv8 person detection, DeepSORT tracking, Kalman-filtered world model, and a React frontend with tactical AR overlays. Designed for edge deployment on NVIDIA Jetson Orin Nano with TensorRT FP16 acceleration.
+<p align="center">
+  <strong>Real-time multi-agent collaborative perception system</strong><br/>
+  <em>Multi-camera tracking · AI-powered sensor fusion · Augmented reality overlays · Edge deployment</em>
+</p>
+
+<p align="center">
+  <a href="#-features">Features</a> ·
+  <a href="#-architecture">Architecture</a> ·
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-deployment">Deployment</a> ·
+  <a href="#-api-reference">API Reference</a> ·
+  <a href="#-troubleshooting">Troubleshooting</a>
+</p>
 
 ---
 
-## Table of Contents
+## Overview
 
-- [Features](#-features)
-- [System Architecture](#-system-architecture)
-- [Data Flow Pipeline](#-data-flow-pipeline)
-- [Project Structure](#-project-structure)
-- [Backend Components](#-backend-components)
-- [Frontend Components](#-frontend-components)
-- [WebSocket Protocol](#-websocket-protocol)
-- [REST API](#-rest-api)
-- [Configuration Reference](#-configuration-reference)
-- [Installation](#-installation)
-- [Deployment](#-deployment)
-- [SSL / HTTPS](#-ssl--https)
-- [Mobile Camera Streaming](#-mobile-camera-streaming)
-- [AR Overlay System](#-ar-overlay-system)
-- [World Model & Sensor Fusion](#-world-model--sensor-fusion)
-- [Troubleshooting](#-troubleshooting)
+OVERWATCH is a real-time multi-camera situational awareness platform built for edge deployment on NVIDIA Jetson hardware. It fuses video from IP cameras and mobile phones into a unified world model using YOLOv8 detection, Hungarian-assignment tracking, adaptive Kalman filtering, and cross-camera appearance re-identification — all at TensorRT FP16 speeds.
+
+The system runs a **singleton perception pipeline** — detection, tracking, and fusion execute **once per tick** regardless of how many viewers are connected, then broadcast pre-serialized snapshots to all clients over binary WebSocket.
 
 ---
 
 ## 🚀 Features
 
-| Capability | Description |
+### Core Perception
+| Capability | Implementation |
 |---|---|
-| **Multi-Camera Processing** | Up to 4 concurrent camera streams (physical + mobile virtual cameras) |
-| **Person Detection** | YOLOv8n with COCO class filter (`classes=[0]`) — person-only at NMS level |
-| **TensorRT Acceleration** | FP16 `.engine` export for NVIDIA Jetson — sub-10ms inference |
-| **Predictive Tracking** | DeepSORT (with MobileNet embedder) or centroid-based SimpleTracker fallback |
-| **Sensor Fusion** | 6-state Kalman filter world model with cross-camera object matching |
-| **Cross-Camera Predictions** | Objects seen by camera A appear as predicted ghost markers on camera B |
-| **AR Visualization** | Canvas-based tactical overlays — cyan detection brackets, yellow tracks, red predictions |
-| **Mobile Camera Streaming** | Phone browsers stream camera via WebSocket binary JPEG to the detection pipeline |
+| **Person Detection** | YOLOv8n with NMS-level class filter (`classes=[0]`) — person-only |
+| **TensorRT FP16** | `.engine` export on Jetson — ~8 MiB, sub-10ms inference |
+| **Hungarian Tracking** | `scipy.optimize.linear_sum_assignment` — 0.6×IoU + 0.4×cosine appearance cost |
+| **Tracker Fallback Chain** | DeepSORT (MobileNet) → Hungarian (scipy) → Simple (centroid) |
+| **Adaptive Kalman Filter** | 6-state `[x,y,z,vx,vy,vz]` — measurement noise scales by confidence, bbox area, sensor trust |
+| **Cross-Camera Re-ID** | 64-dim HSV histogram descriptors, L2-normalized, EMA-smoothed (α=0.3) |
+| **Sensor Trust Scoring** | Per-sensor trust ∈ [0.1, 1.0] — increases for consistent measurements, decays for innovation outliers |
+| **Dead-Reckoning Predictions** | Kalman extrapolation up to 5s — objects from Camera A appear as ghosts on Camera B |
+
+### Platform
+| Capability | Implementation |
+|---|---|
+| **Multi-Camera** | Up to 4 concurrent streams (physical MJPEG/RTSP + mobile virtual cameras) |
+| **Mobile Streaming** | Phone browsers → `getUserMedia` → binary JPEG over WebSocket → `VirtualCamera` |
+| **GPS + IMU Fusion** | Mobile geolocation → equirectangular projection; `DeviceOrientationEvent` → camera rotation |
+| **AR Overlays** | Canvas-based: cyan detection brackets, yellow track boxes with velocity arrows, red prediction ghosts |
+| **Binary Protocol** | msgpack-serialized snapshots — zero-copy broadcast to all viewers |
 | **SSL/TLS** | Self-signed certificates with SAN for LAN IP access (required for `getUserMedia`) |
-| **Edge Deployment** | Automated SSH deployment to Jetson Orin Nano via paramiko/SFTP |
-| **Binary Protocol** | msgpack serialization for all viewer WebSocket communication |
+| **JWT Authentication** | Token issuance endpoint (`POST /api/token`) with configurable expiry |
+| **Edge Deployment** | Automated SSH/SFTP deployment to Jetson Orin Nano via paramiko |
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                     OVERWATCH SYSTEM ARCHITECTURE                    │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  📱 Mobile Phones ──► /ws/camera  (binary JPEG frames over WS)      │
-│  📷 IP Cameras    ──► OpenCV VideoCapture (MJPEG/RTSP)              │
-│         │                                                            │
-│         ▼                                                            │
-│  ┌───────────────── FastAPI Backend (port 8000, SSL) ─────────────┐  │
-│  │                                                                │  │
-│  │  CameraManager          DetectionEngine      TrackingManager   │  │
-│  │  ├─ CameraCapture[]     ├─ YOLODetector      ├─ SimpleTracker  │  │
-│  │  ├─ VirtualCamera[]     │  ├─ YOLOv8n .pt    │  (centroid)     │  │
-│  │  └─ FrameQueue          │  ├─ .engine (TRT)  ├─ DeepSORTTrack  │  │
-│  │     (thread-safe)       │  └─ .onnx          │  (MobileNet)    │  │
-│  │         │               │  classes=[0]        └─ GlobalRegistry │  │
-│  │         └───────────────┴───────┴────────────────────┘          │  │
-│  │                              │                                  │  │
-│  │                         WorldModel                              │  │
-│  │                    ├─ CoordinateTransform                       │  │
-│  │                    ├─ KalmanFilter (6-state per object)         │  │
-│  │                    ├─ Cross-camera association                  │  │
-│  │                    └─ Prediction generation                     │  │
-│  │                              │                                  │  │
-│  │                     WebSocketManager                            │  │
-│  │                    ├─ FrameEncoder (JPEG q=40, 640px max)       │  │
-│  │                    └─ msgpack binary serialization               │  │
-│  └──────────────────────────┬─────────────────────────────────────┘  │
-│                             │ /ws  (msgpack binary frames)           │
-│                             ▼                                        │
-│  ┌──────────────── React Frontend (port 3000, HTTPS) ─────────────┐  │
-│  │  App.jsx ──► AdminDashboard (2×2 camera grid + stats)          │  │
-│  │  /mobile ──► MobileCamera.jsx (phone camera streamer)          │  │
-│  │  Services: websocket.js, cameraStream.js                       │  │
-│  └────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
+                          ┌─────────────────────────────────┐
+                          │       OVERWATCH  v2.0.0         │
+                          └─────────────────────────────────┘
+
+  ╔═══════════════╗       ╔═══════════════════════════════════════════════════╗
+  ║  DATA SOURCES ║       ║          JETSON ORIN NANO  (backend :8000)       ║
+  ╠═══════════════╣       ╠═══════════════════════════════════════════════════╣
+  ║               ║       ║                                                   ║
+  ║  📷 IP Camera ─────────►  CameraCapture (OpenCV, MJPEG/RTSP)            ║
+  ║               ║       ║       │                                           ║
+  ║  📱 Mobile    ─────────►  VirtualCamera (binary JPEG push)               ║
+  ║   Phone       ║ws/cam ║       │         + GPS/IMU sensor data             ║
+  ║               ║       ║       ▼                                           ║
+  ║               ║       ║  ┌──────────────────────────────────────────┐     ║
+  ║               ║       ║  │     PerceptionPipeline  (singleton)     │     ║
+  ║               ║       ║  │                                          │     ║
+  ║               ║       ║  │  1. DETECT   YOLOv8n TensorRT FP16     │     ║
+  ║               ║       ║  │              + HSV appearance features   │     ║
+  ║               ║       ║  │                     │                    │     ║
+  ║               ║       ║  │  2. TRACK    Hungarian assignment       │     ║
+  ║               ║       ║  │              IoU + cosine appearance     │     ║
+  ║               ║       ║  │                     │                    │     ║
+  ║               ║       ║  │  3. FUSE     Adaptive Kalman 6-state    │     ║
+  ║               ║       ║  │              Cross-camera matching      │     ║
+  ║               ║       ║  │              Sensor trust scoring       │     ║
+  ║               ║       ║  │                     │                    │     ║
+  ║               ║       ║  │  4. SNAPSHOT Pre-serialized msgpack     │     ║
+  ║               ║       ║  └──────────────┬───────────────────────────┘     ║
+  ║               ║       ║                 │                                 ║
+  ╚═══════════════╝       ║                 ▼  broadcast                      ║
+                          ║     WebSocketManager (/ws, msgpack binary)        ║
+                          ║         │           │           │                  ║
+                          ╚═════════╪═══════════╪═══════════╪═════════════════╝
+                                    │           │           │
+                          ┌─────────▼──┐  ┌─────▼──┐  ┌────▼───┐
+                          │  Viewer 1  │  │Viewer 2│  │Viewer N│
+                          │  React     │  │  React │  │  React │
+                          │  AR Canvas │  │  ...   │  │  ...   │
+                          └────────────┘  └────────┘  └────────┘
 ```
 
----
+### Pipeline Design
 
-## 🔄 Data Flow Pipeline
+Unlike traditional per-viewer architectures, OVERWATCH runs a **single shared pipeline**. The `PerceptionPipeline` singleton executes detect → track → fuse **once per tick**, produces a `PerceptionSnapshot` with pre-serialized msgpack packets, and all connected viewers simply read from the latest snapshot. This means:
 
-Each viewer connection triggers this per-frame cycle:
-
-```
-1. INGEST        CameraCapture thread OR VirtualCamera.inject_frame(jpeg)
-                      │
-2. DETECT         detection_engine.process_frames() → YOLOv8n (classes=[0])
-                      │
-3. TRACK          tracking_manager.process_detections() → DeepSORT/SimpleTracker
-                      │
-4. FUSE           world_model.update_with_tracking_results() → Kalman filter
-                      │
-5. PREDICT        world_model.generate_predictions_for_camera() → cross-camera ghosts
-                      │
-6. ENCODE         FrameEncoder.encode_frame() → JPEG (q=40, 640px max)
-                      │
-7. SERIALIZE      MessageBuilder.build_frame_message() → msgpack
-                      │
-8. TRANSMIT       WebSocket binary → Frontend
-                      │
-9. RENDER         CameraDisplay canvas → AR overlays
-```
+- **1 camera + 10 viewers = 1 GPU inference** (not 10)
+- Zero-copy broadcast via pre-serialized binary packets
+- Slow viewers gracefully skip intermediate frames
 
 ---
 
@@ -118,215 +119,75 @@ Each viewer connection triggers this per-frame cycle:
 
 ```
 OVERWATCH/
-├── README.md
-├── certs/                             # SSL certificates (self-signed)
+│
+├── backend/                              # FastAPI + Perception Engine
+│   ├── main.py                           # App entry, lifespan, REST + WS endpoints
+│   ├── requirements.txt                  # Python dependencies (CPU/Windows)
+│   ├── requirements-jetson.txt           # Jetson Orin Nano dependencies
+│   ├── yolov8n.pt                        # YOLOv8 nano weights (~6 MB)
+│   ├── yolov8n.engine                    # TensorRT FP16 engine (Jetson, ~8.9 MB)
+│   ├── .env                              # Runtime configuration
+│   ├── static/
+│   │   └── mobile.html                   # Standalone mobile camera page
+│   └── app/
+│       ├── config.py                     # Pydantic settings with .env support
+│       ├── api/
+│       │   └── websocket_handler.py      # WS connection manager, frame encoding
+│       └── core/
+│           ├── perception_pipeline.py    # Singleton detect→track→fuse loop
+│           ├── detection_engine.py       # YOLOv8 wrapper + appearance features
+│           ├── tracking_manager.py       # Hungarian / DeepSORT / Simple tracker
+│           ├── world_model.py            # Kalman filter, cross-cam fusion, trust
+│           └── camera_manager.py         # Physical + virtual camera management
+│
+├── frontend/                             # React 18 Admin Dashboard
+│   ├── package.json
+│   ├── .env                              # REACT_APP_BACKEND_HOST / PORT
+│   └── src/
+│       ├── App.jsx                       # Dashboard layout, WS event handling
+│       ├── App.css                       # Dark tactical theme
+│       ├── components/
+│       │   └── CameraDisplay.jsx         # Canvas AR overlay renderer
+│       ├── pages/
+│       │   ├── MobileCamera.jsx          # Phone camera streaming UI
+│       │   └── MobileCamera.css
+│       └── services/
+│           ├── websocket.js              # msgpack binary WS client
+│           └── cameraStream.js           # getUserMedia → WS + GPS/IMU capture
+│
+├── scripts/                              # Deployment & Operations
+│   ├── deploy_v2.py                      # Full SSH/SFTP deployment to Jetson
+│   ├── restart_jetson.py                 # Force-kill and restart backend
+│   ├── check_logs.py                     # Verify Jetson logs and imports
+│   ├── check_status.py                   # Monitor API health, connections, GPU
+│   └── ws_test.py                        # CLI WebSocket test client
+│
+├── certs/                                # SSL certificates (self-signed)
 │   ├── cert.pem
 │   └── key.pem
 │
-├── backend/                           # Python FastAPI backend
-│   ├── main.py                        # Entry point (196 lines)
-│   ├── requirements.txt               # Windows/CPU dependencies
-│   ├── requirements-jetson.txt        # Jetson Orin Nano deps
-│   ├── yolov8n.pt                     # YOLOv8 nano weights (~6 MB)
-│   ├── yolov8n.engine                 # TensorRT FP16 (Jetson, ~8.9 MB)
-│   ├── .env                           # Environment config
-│   ├── static/
-│   │   └── mobile.html                # Standalone mobile camera page (283 lines)
-│   └── app/
-│       ├── __init__.py
-│       ├── config.py                  # Pydantic settings (66 lines)
-│       ├── api/
-│       │   └── websocket_handler.py   # WS manager (605 lines)
-│       └── core/
-│           ├── camera_manager.py      # Camera capture (508 lines)
-│           ├── detection_engine.py    # YOLOv8 detector (275 lines)
-│           ├── tracking_manager.py    # DeepSORT/SimpleTracker (316 lines)
-│           └── world_model.py         # Kalman fusion (556 lines)
-│
-├── frontend/                          # React 18 frontend
-│   ├── package.json
-│   ├── .env                           # REACT_APP_BACKEND_HOST/PORT
-│   ├── public/index.html
-│   └── src/
-│       ├── index.js
-│       ├── App.jsx                    # Admin dashboard (225 lines)
-│       ├── App.css                    # Dark tactical theme (360 lines)
-│       ├── components/
-│       │   └── CameraDisplay.jsx      # AR overlay renderer (348 lines)
-│       ├── pages/
-│       │   ├── MobileCamera.jsx       # Mobile streaming (184 lines)
-│       │   └── MobileCamera.css
-│       └── services/
-│           ├── websocket.js           # msgpack client (199 lines)
-│           └── cameraStream.js        # getUserMedia streamer (349 lines)
-│
-└── scripts/                           # Deployment utilities
-    ├── deploy_jetson.py               # Full SSH deployment (229 lines)
-    ├── fix_jetson.py                  # Quick restart helper (63 lines)
-    └── ws_test.py                     # CLI WebSocket test (66 lines)
+└── README.md
 ```
 
 ---
 
-## ⚙️ Backend Components
+## ⚡ Quick Start
 
-### main.py (196 lines)
-FastAPI entry point with lifespan management, two WebSocket endpoints (`/ws` for viewers, `/ws/camera` for mobile sources), REST API, and SSL configuration.
+### Prerequisites
 
-### config.py (66 lines)
-Pydantic `BaseSettings` loading from `.env`:
+- **Python 3.10+** with pip
+- **Node.js 18+** with npm
+- **OpenSSL** (for certificate generation)
+- NVIDIA Jetson Orin Nano *(production)* or any machine with CUDA *(development)*
 
-| Setting | Default | Description |
-|---|---|---|
-| `model_path` | `yolov8n.pt` | Model file (.pt / .engine) |
-| `detection_classes` | `[0]` | COCO classes to detect (0=person) |
-| `device` | `auto` | Compute: auto / cpu / cuda:0 |
-| `half_precision` | `False` | FP16 inference (True on Jetson) |
-| `max_cameras` | `4` | Maximum camera slots |
-| `target_fps` | `24` | Processing FPS target |
-| `ssl_enabled` | `True` | Enable HTTPS/WSS |
-
-### detection_engine.py (275 lines)
-YOLOv8 wrapper with GPU/TensorRT/CPU auto-detection. Filters to person-only (`classes=[0]`) at NMS level. Skips `.to()` for TensorRT engines (already GPU-bound).
-
-### tracking_manager.py (316 lines)
-- **SimpleTracker**: Greedy nearest-centroid (100px threshold), velocity from frame-to-frame displacement
-- **DeepSORTTracker**: MobileNet appearance embeddings (if library available)
-- Per-camera trackers with global track registry
-
-### world_model.py (556 lines)
-- **CoordinateTransform**: Pixel ↔ world projection (simplified pinhole, depth=1.0m)
-- **KalmanFilter**: 6-state `[x, y, z, vx, vy, vz]` constant-velocity model
-- **Cross-camera fusion**: Euclidean distance < 2m + same class_id
-- **Prediction generation**: Extrapolate unseen objects to other camera views
-
-### camera_manager.py (508 lines)
-- **CameraCapture**: OpenCV threaded capture with FPS limiting
-- **VirtualCamera**: Push-based for mobile browser streams
-- **FrameQueue**: Thread-safe, drop-oldest policy
-
-### websocket_handler.py (605 lines)
-- **ConnectionManager**: Active connection tracking and broadcast
-- **FrameEncoder**: JPEG encoding (q=40, 640px max)
-- **MessageBuilder**: Serialize detections/tracks/predictions
-- **WebSocketManager**: Orchestrates the per-viewer processing loop
-
----
-
-## 🖥️ Frontend Components
-
-### App.jsx (225 lines)
-Admin dashboard with 2×2 camera grid, stats sidebar, camera start/stop controls. Routes: `/mobile` → MobileCamera, `/*` → AdminDashboard.
-
-### CameraDisplay.jsx (348 lines)
-Canvas AR overlay renderer:
-- **Detections**: Cyan corner brackets + PERSON pill label
-- **Tracks**: Yellow bboxes + velocity arrows + track ID
-- **Predictions**: Red dashed boxes + pulsing center dot
-
-### MobileCamera.jsx (184 lines)
-Phone camera streaming page with live preview, start/stop, front/rear toggle, FPS stats.
-
-### websocket.js (199 lines)
-Singleton msgpack WebSocket client with event emitter and exponential-backoff reconnect.
-
-### cameraStream.js (349 lines)
-`getUserMedia` → offscreen canvas → JPEG blob → binary WebSocket to `/ws/camera`.
-
----
-
-## 📡 WebSocket Protocol
-
-### Endpoints
-
-| Endpoint | Role | Format |
-|---|---|---|
-| `/ws` | Viewer (admin dashboard) | msgpack binary |
-| `/ws/camera` | Camera source (mobile) | Binary JPEG frames |
-
-### Message Types
-
-**Frame Message** (`type: 'frame'`):
-```json
-{
-  "type": "frame",
-  "camera_id": 0,
-  "timestamp": 1706745600.123,
-  "frame_data": "<JPEG bytes>",
-  "detections": [{"bbox": [x1,y1,x2,y2], "confidence": 0.87, "class_name": "person"}],
-  "tracks": [{"track_id": 1, "bbox": [...], "velocity": [dx, dy]}],
-  "predictions": [{"object_id": 1, "bbox": [...], "time_since_seen": 1.2, "inferred": true}]
-}
-```
-
-**Mobile Registration** (JSON):
-```
-Client → {"type": "register", "role": "camera_source", "camera_id": null}
-Server → {"type": "registered", "camera_id": 0, "target_fps": 15}
-```
-
----
-
-## 🌐 REST API
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/` | Health check |
-| `GET` | `/status` | System status (cameras, clients, model) |
-| `GET` | `/cameras` | Camera info list |
-| `GET` | `/mobile` | Standalone mobile camera HTML page |
-| `POST` | `/camera/{id}/start` | Start physical camera |
-| `POST` | `/camera/{id}/stop` | Stop camera |
-
----
-
-## 🔧 Configuration Reference
-
-### Backend `.env`
+### 1. Clone
 
 ```bash
-MODEL_PATH=yolov8n.engine
-DEVICE=cuda:0
-HALF_PRECISION=true
-DETECTION_CLASSES=[0]
-SSL_ENABLED=true
-SSL_CERTFILE=certs/cert.pem
-SSL_KEYFILE=certs/key.pem
-MAX_CAMERAS=4
-TARGET_FPS=24
+git clone https://github.com/mandarwagh9/overwatch.git
+cd overwatch
 ```
 
-### Frontend `.env`
-
-```bash
-REACT_APP_BACKEND_HOST=192.168.1.12
-REACT_APP_BACKEND_PORT=8000
-```
-
----
-
-## 📦 Installation
-
-### Backend
-
-```bash
-cd backend
-
-# Windows / CPU
-pip install -r requirements.txt
-
-# Jetson Orin Nano (PyTorch from NVIDIA wheels)
-pip install -r requirements-jetson.txt
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-```
-
-### SSL Certificates
+### 2. Generate SSL Certificates
 
 ```bash
 mkdir certs
@@ -335,113 +196,373 @@ openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
   -addext "subjectAltName=IP:192.168.1.12,IP:127.0.0.1,DNS:localhost"
 ```
 
+### 3. Backend Setup
+
+```bash
+cd backend
+pip install -r requirements.txt        # CPU/Windows
+# pip install -r requirements-jetson.txt  # Jetson Orin Nano
+```
+
+Create `backend/.env`:
+
+```env
+MODEL_PATH=yolov8n.pt
+DEVICE=auto
+HALF_PRECISION=false
+DETECTION_CLASSES=[0]
+SSL_ENABLED=true
+HOST=0.0.0.0
+PORT=8000
+```
+
+### 4. Frontend Setup
+
+```bash
+cd frontend
+npm install
+```
+
+Create `frontend/.env`:
+
+```env
+REACT_APP_BACKEND_HOST=192.168.1.12
+REACT_APP_BACKEND_PORT=8000
+```
+
+### 5. Run
+
+```bash
+# Terminal 1 — Backend
+cd backend && python main.py
+
+# Terminal 2 — Frontend
+cd frontend && npm start
+```
+
+Open **https://localhost:3001** — accept the self-signed certificate warning.
+
 ---
 
 ## 🚀 Deployment
 
-### Development (Windows/CPU)
+### Jetson Orin Nano (Production)
+
+#### Automated Deployment
 
 ```bash
-# Terminal 1
-cd backend && python main.py
-
-# Terminal 2
-cd frontend && npm start
+python scripts/deploy_v2.py
 ```
 
-### Production (Jetson Orin Nano)
+This script handles the full lifecycle via SSH:
+1. Kills any existing backend process
+2. Uploads all 8 backend files via SFTP
+3. Installs `scipy` and `PyJWT` dependencies
+4. Verifies all imports
+5. Starts the backend with `nohup`
+6. Validates health check returns v2.0.0
+
+#### Manual Deployment
 
 ```bash
-# Export TensorRT engine
+# On Jetson — Export TensorRT engine (one-time)
 python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='engine', half=True, imgsz=640)"
 
-# Start backend
+# Create .env
+cat > .env << 'EOF'
+MODEL_PATH=yolov8n.engine
+DEVICE=cuda:0
+HALF_PRECISION=true
+DETECTION_CLASSES=[0]
+SSL_ENABLED=true
+HOST=0.0.0.0
+PORT=8000
+EOF
+
+# Start
 nohup python3 main.py > /tmp/overwatch.log 2>&1 &
 ```
 
-### Automated SSH Deployment
+#### Operations Scripts
 
-```bash
-python scripts/deploy_jetson.py
+| Script | Purpose |
+|---|---|
+| `scripts/deploy_v2.py` | Full deployment (upload, deps, restart, verify) |
+| `scripts/restart_jetson.py` | Force-kill all processes and restart |
+| `scripts/check_logs.py` | Read startup logs, verify scipy + pipeline imports |
+| `scripts/check_status.py` | API health, active WebSocket connections, GPU stats |
+
+---
+
+## 📡 API Reference
+
+### REST Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/` | Health check — returns version, status, capabilities |
+| `GET` | `/status` | System status (cameras, clients, model info) |
+| `GET` | `/cameras` | Active camera list |
+| `GET` | `/mobile` | Standalone mobile camera HTML page |
+| `POST` | `/camera/{id}/start` | Start a physical camera |
+| `POST` | `/camera/{id}/stop` | Stop a camera |
+| `POST` | `/api/token` | Issue JWT authentication token |
+
+#### Health Check Response
+
+```json
+{
+  "message": "Overwatch API is running",
+  "version": "2.0.0",
+  "status": "operational",
+  "capabilities": [
+    "perception_pipeline",
+    "hungarian_tracking",
+    "adaptive_kalman",
+    "appearance_reid",
+    "gps_imu_fusion",
+    "world_update_broadcast"
+  ]
+}
 ```
 
-Handles: SSH → upload files → install deps → export TensorRT → create .env → start backend.
+### WebSocket Endpoints
+
+| Endpoint | Direction | Format | Purpose |
+|---|---|---|---|
+| `/ws` | Server → Client | msgpack binary | Viewer stream (frames + detections + tracks + predictions) |
+| `/ws/camera` | Client → Server | Binary JPEG + JSON | Mobile camera source |
+
+### WebSocket Message Types
+
+<details>
+<summary><strong>Frame Message</strong> (server → viewer)</summary>
+
+```json
+{
+  "type": "frame",
+  "camera_id": 0,
+  "timestamp": 1706745600.123,
+  "frame_data": "<JPEG bytes>",
+  "detections": [
+    { "bbox": [x1, y1, x2, y2], "confidence": 0.87, "class_name": "person", "feature_vector": "..." }
+  ],
+  "tracks": [
+    { "track_id": 1, "bbox": [x1, y1, x2, y2], "velocity": [dx, dy], "confidence": 0.9 }
+  ],
+  "predictions": [
+    { "object_id": 1, "bbox": [x1, y1, x2, y2], "time_since_seen": 1.2, "confidence": 0.6, "inferred": true }
+  ]
+}
+```
+</details>
+
+<details>
+<summary><strong>World Update</strong> (server → viewer)</summary>
+
+```json
+{
+  "type": "world_update",
+  "timestamp": 1706745600.123,
+  "objects": [
+    {
+      "id": "obj_1",
+      "class_id": 0,
+      "position": [2.3, 1.1, 0.0],
+      "velocity": [0.5, -0.2, 0.0],
+      "confidence": 0.85,
+      "last_seen_camera": 0,
+      "position_uncertainty": 0.12,
+      "bbox_size": [45, 120]
+    }
+  ],
+  "stats": { "tick_ms": 42.3, "avg_tick_ms": 38.7, "cameras": 2 }
+}
+```
+</details>
+
+<details>
+<summary><strong>Mobile Registration</strong> (camera source handshake)</summary>
+
+```
+Client → { "type": "register", "role": "camera_source", "camera_id": null }
+Server → { "type": "registered", "camera_id": 0, "target_fps": 15 }
+Client → [binary JPEG frames at target FPS]
+Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }
+```
+</details>
 
 ---
 
-## 🔒 SSL / HTTPS
+## 🔧 Configuration
 
-Required for mobile camera `getUserMedia()` over LAN. Self-signed certs with SAN entries for LAN IPs. Accept certificate warning by visiting `https://<ip>:8000` in browser.
+### Backend `.env`
 
----
+| Variable | Default | Description |
+|---|---|---|
+| `MODEL_PATH` | `yolov8n.pt` | Model file — `.pt`, `.engine` (TensorRT), or `.onnx` |
+| `DEVICE` | `auto` | Compute device — `auto`, `cpu`, `cuda:0` |
+| `HALF_PRECISION` | `false` | FP16 inference (set `true` on Jetson with `.engine`) |
+| `DETECTION_CLASSES` | `[0]` | COCO class IDs to detect (`0` = person) |
+| `SSL_ENABLED` | `true` | Enable HTTPS/WSS |
+| `SSL_CERTFILE` | `certs/cert.pem` | SSL certificate path |
+| `SSL_KEYFILE` | `certs/key.pem` | SSL private key path |
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8000` | Bind port |
+| `MAX_CAMERAS` | `4` | Maximum concurrent camera streams |
+| `TARGET_FPS` | `24` | Processing framerate target |
+| `JWT_SECRET` | `overwatch-secret` | JWT signing secret |
+| `JWT_ALGORITHM` | `HS256` | JWT algorithm |
+| `JWT_EXPIRE_MINUTES` | `60` | Token expiry |
+| `AUTH_ENABLED` | `false` | Enforce JWT on WebSocket connections |
+| `TRUST_DECAY_RATE` | `0.01` | Per-tick trust decay for sensors |
+| `TRUST_MIN` | `0.1` | Minimum sensor trust floor |
 
-## 📱 Mobile Camera Streaming
+### Frontend `.env`
 
-**React App**: `https://<frontend>:3000/mobile`  
-**Standalone**: `https://<backend>:8000/mobile`
-
-Both use: `getUserMedia` → canvas → JPEG blob → binary WebSocket → VirtualCamera → detection pipeline.
+| Variable | Description |
+|---|---|
+| `REACT_APP_BACKEND_HOST` | Jetson/backend IP address |
+| `REACT_APP_BACKEND_PORT` | Backend port (default `8000`) |
 
 ---
 
 ## 🎯 AR Overlay System
 
-| Layer | Style | Elements |
+The frontend renders three distinct visualization layers on a canvas overlay:
+
+| Layer | Color | Elements |
 |---|---|---|
-| Detections | Cyan `#00ffc8` | Corner brackets, PERSON pill, crosshair |
-| Tracks | Yellow `#ffff00` | Bounding box, center dot, velocity arrow, track ID |
-| Predictions | Red dashed | Ghost box, pulsing center, "X.Xs ago" label |
+| **Detections** | Cyan `#00ffc8` | Corner brackets, center crosshair, `PERSON` confidence pill with pointer |
+| **Tracks** | Yellow `#ffff00` | Bounding box, center dot, velocity vector arrow with arrowhead, track ID label |
+| **Predictions** | Red `#ff4444` dashed | Ghost bounding box, pulsing center dot (sine animation), confidence + time-ago label |
+
+Detection overlays show what the model sees *right now*. Track overlays show persistent identity across frames. Prediction overlays show cross-camera dead-reckoning — objects last seen by another camera, projected into the current view.
 
 ---
 
 ## 🌍 World Model & Sensor Fusion
 
-- **Kalman Filter**: 6-state `[x, y, z, vx, vy, vz]` per object
-- **Cross-camera matching**: Euclidean < 2m, same class, 100ms recency gate
-- **Prediction horizon**: 5 seconds max dead-reckoning
-- **Object cleanup**: Remove if unseen > 5 seconds
+### Kalman Filter
+Each fused world object maintains a 6-state Kalman filter: `[x, y, z, vx, vy, vz]` with constant-velocity dynamics. Measurement noise **R** adapts per-update based on detection confidence, bounding box area, and sensor trust — higher-quality observations tighten the filter, while noisy or untrusted sensors widen it.
+
+### Cross-Camera Association
+Objects from different cameras are matched when:
+- Euclidean distance < 2 meters
+- Same `class_id`
+- Appearance cosine similarity > 0.5 (when feature vectors available)
+
+### Sensor Trust
+Each camera/sensor earns trust through consistency:
+- **Consistent measurements** → trust increases (capped at 1.0)
+- **Innovation outliers** → trust decays (floored at 0.1)
+
+### Appearance Re-ID
+- 64-dimensional HSV histogram descriptors computed per detection (~0.1ms each)
+- L2-normalized for cosine similarity
+- Exponential moving average (α=0.3) for descriptor stability across frames
+
+---
+
+## 📱 Mobile Camera Streaming
+
+Any phone on the same LAN can become a camera source:
+
+**Via React app**: `https://<frontend-ip>:3001/mobile`
+**Standalone page**: `https://<jetson-ip>:8000/mobile`
+
+The mobile client:
+1. Opens rear camera via `getUserMedia` (1280×720)
+2. Renders to offscreen canvas → extracts JPEG blob
+3. Sends binary frames over WebSocket to `/ws/camera`
+4. Captures GPS (`watchPosition`, high accuracy) and IMU (`DeviceOrientationEvent`) at 2 Hz
+5. Sends sensor data as JSON for camera calibration fusion
+
+> **Note**: `getUserMedia` requires HTTPS — this is why SSL certificates are mandatory even for LAN deployments.
 
 ---
 
 ## 🐛 Troubleshooting
 
-### WebSocket won't connect
-- Accept self-signed cert at `https://<ip>:8000`
-- Check `REACT_APP_BACKEND_HOST` in frontend `.env`
+<details>
+<summary><strong>WebSocket won't connect</strong></summary>
 
-### Mobile camera not working
-- Requires HTTPS (SSL enabled)
-- Same LAN as backend
-- Allow camera permission when prompted
+1. Visit `https://<jetson-ip>:8000` in your browser and accept the self-signed certificate
+2. Verify `REACT_APP_BACKEND_HOST` in `frontend/.env` matches the backend IP
+3. Check the backend is running: `curl -sk https://<jetson-ip>:8000/`
+</details>
 
-### Jetson issues
+<details>
+<summary><strong>Mobile camera shows black screen</strong></summary>
+
+- HTTPS is required for `getUserMedia` — ensure `SSL_ENABLED=true`
+- Phone must be on the same LAN as the backend
+- Allow camera permission when the browser prompts
+- Try the standalone page: `https://<jetson-ip>:8000/mobile`
+</details>
+
+<details>
+<summary><strong>TensorRT .to() error</strong></summary>
+
+TensorRT `.engine` files are already GPU-bound. The detection engine correctly skips `.to()` for these models. If you see this error, ensure you're using the latest `detection_engine.py`.
+</details>
+
+<details>
+<summary><strong>Pydantic "Config and model_config" error</strong></summary>
+
+Use only the `model_config = SettingsConfigDict(...)` dict pattern — do not define an inner `class Config`. This is the Pydantic v2 convention.
+</details>
+
+<details>
+<summary><strong>Port already in use on Jetson</strong></summary>
+
 ```bash
-ssh mandar@192.168.1.12 'tail -100 /tmp/overwatch.log'
-python scripts/fix_jetson.py
+python scripts/restart_jetson.py
+# Or manually:
+pkill -9 -f 'python3 main.py'
+sleep 2
+cd /home/mandar/OVERWATCH/backend && nohup python3 main.py > /tmp/overwatch.log 2>&1 &
 ```
+</details>
 
-### Pydantic "Config and model_config" error
-- Use only `model_config = {...}` dict, not inner `class Config`
+<details>
+<summary><strong>Checking Jetson logs</strong></summary>
 
-### TensorRT `.to()` error
-- `.engine` files are GPU-bound — `detection_engine.py` skips `.to()` for them
+```bash
+# From your development machine
+python scripts/check_logs.py
+python scripts/check_status.py
+
+# Or via SSH
+ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
+```
+</details>
+
+---
+
+## 🧰 Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Detection** | [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics) (nano) |
+| **Inference** | NVIDIA TensorRT FP16 / ONNX Runtime / PyTorch |
+| **Tracking** | [DeepSORT](https://github.com/levan92/deep_sort_realtime) / Hungarian (scipy) / Centroid |
+| **Fusion** | Custom 6-state Kalman filter with adaptive noise |
+| **Backend** | [FastAPI](https://fastapi.tiangolo.com/) + Uvicorn (ASGI) |
+| **Protocol** | [msgpack](https://msgpack.org/) binary over WebSocket |
+| **Frontend** | [React 18](https://react.dev/) + Canvas 2D API |
+| **Auth** | [PyJWT](https://pyjwt.readthedocs.io/) (HS256) |
+| **Hardware** | NVIDIA Jetson Orin Nano (JetPack 6.x, R36) |
+| **Deployment** | [paramiko](https://www.paramiko.org/) SSH/SFTP automation |
 
 ---
 
 ## 📄 License
 
-MIT License
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 
-## 🙏 Acknowledgments
-
-- [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics)
-- [DeepSORT](https://github.com/levan92/deep_sort_realtime)
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [React](https://react.dev/)
-- [Three.js](https://threejs.org/) (installed for future 3D tactical map)
-
----
-
-**Built for connected situational awareness** 🎯
+<p align="center">
+  <strong>Built for connected situational awareness</strong> 🎯
+</p>
