@@ -5,6 +5,7 @@ World Model for sensor fusion and coordinate transformation across multiple came
 import asyncio
 import time
 import numpy as np
+import cv2
 from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
@@ -61,6 +62,170 @@ class PredictedTarget:
     velocity_projection: Tuple[float, float]
     source_camera: int = -1  # camera that actually sees this person
     keypoints: Optional[list] = None  # projected COCO skeleton for ghost overlay
+    homography_source: bool = False  # True = cross-camera homography projection
+
+
+# ── Cross-Camera Homography ──────────────────────────────────────────
+# Learns the ground-plane homography H between camera pairs from shared
+# person observations (foot-point correspondences).  Once H is known,
+# a person detected in Camera A can be projected onto Camera B's pixel
+# space instantly — no calibration, no extrapolation.
+#
+# Theory: Hartley & Zisserman, "Multiple View Geometry", Ch 13.
+# Practice: AIFARMS multi-camera-pig-tracking (CVPR 2021 Workshop)
+#           uses the same cv2.findHomography + RANSAC approach.
+
+class CrossCameraHomography:
+    """Learn and apply ground-plane homography between camera pairs
+    from shared foot-point observations.  No calibration required."""
+
+    def __init__(self, min_pairs: int = 4, max_pairs: int = 100,
+                 ransac_thresh: float = 12.0, re_estimate_every: int = 5):
+        # (cam_src, cam_dst) -> deque of (src_pt, dst_pt) foot-point pairs
+        self._pairs: Dict[Tuple[int, int], deque] = defaultdict(
+            lambda: deque(maxlen=max_pairs)
+        )
+        # (cam_src, cam_dst) -> 3x3 homography numpy array
+        self._H: Dict[Tuple[int, int], np.ndarray] = {}
+        # (cam_src, cam_dst) -> mean reprojection error (px) on inliers
+        self._reproj_err: Dict[Tuple[int, int], float] = {}
+        # (cam_src, cam_dst) -> number of RANSAC inliers
+        self._inlier_count: Dict[Tuple[int, int], int] = {}
+
+        self.min_pairs = min_pairs
+        self.ransac_thresh = ransac_thresh
+        self._re_est = re_estimate_every
+        self._add_count: Dict[Tuple[int, int], int] = defaultdict(int)
+
+    # ── Public API ─────────────────────────────────────────────────
+
+    def add_correspondence(self, cam_src: int, cam_dst: int,
+                           foot_src: Tuple[float, float],
+                           foot_dst: Tuple[float, float]):
+        """Record one shared-observation foot-point pair."""
+        fwd = (cam_src, cam_dst)
+        rev = (cam_dst, cam_src)
+        self._pairs[fwd].append((
+            np.array(foot_src, dtype=np.float64),
+            np.array(foot_dst, dtype=np.float64),
+        ))
+        self._pairs[rev].append((
+            np.array(foot_dst, dtype=np.float64),
+            np.array(foot_src, dtype=np.float64),
+        ))
+        self._add_count[fwd] += 1
+        self._add_count[rev] += 1
+        # Re-estimate periodically (not every single add)
+        if self._add_count[fwd] % self._re_est == 0:
+            self._estimate(fwd)
+            self._estimate(rev)
+
+    def project_point(self, cam_src: int, cam_dst: int,
+                      pt: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+        """Project a 2D point from cam_src view → cam_dst view via H."""
+        H = self._H.get((cam_src, cam_dst))
+        if H is None:
+            return None
+        p = np.array([pt[0], pt[1], 1.0], dtype=np.float64)
+        proj = H @ p
+        w = proj[2]
+        if abs(w) < 1e-8:
+            return None
+        return (float(proj[0] / w), float(proj[1] / w))
+
+    def project_bbox(self, cam_src: int, cam_dst: int,
+                     foot_src: Tuple[float, float],
+                     bbox_h_src: float,
+                     bbox_w_src: float) -> Optional[Tuple[Tuple[float, float], float, float]]:
+        """Project foot point + estimate bbox in target camera.
+
+        Returns (projected_foot, estimated_width, estimated_height) or None.
+        Uses the homography's local Jacobian to estimate scale change.
+        """
+        dst_foot = self.project_point(cam_src, cam_dst, foot_src)
+        if dst_foot is None:
+            return None
+        # Estimate scale via Jacobian at the source point
+        H = self._H[(cam_src, cam_dst)]
+        head_src = (foot_src[0], foot_src[1] - bbox_h_src)
+        side_src = (foot_src[0] + bbox_w_src / 2, foot_src[1])
+        dst_head = self.project_point(cam_src, cam_dst, head_src)
+        dst_side = self.project_point(cam_src, cam_dst, side_src)
+        if dst_head is None or dst_side is None:
+            # Fallback: preserve source bbox size
+            return (dst_foot, bbox_w_src, bbox_h_src)
+        est_h = ((dst_foot[0] - dst_head[0])**2 + (dst_foot[1] - dst_head[1])**2) ** 0.5
+        est_w = 2.0 * ((dst_side[0] - dst_foot[0])**2 + (dst_side[1] - dst_foot[1])**2) ** 0.5
+        # Clamp to reasonable range
+        est_h = max(40.0, min(est_h, 600.0))
+        est_w = max(20.0, min(est_w, 400.0))
+        return (dst_foot, est_w, est_h)
+
+    def has_homography(self, cam_src: int, cam_dst: int) -> bool:
+        return (cam_src, cam_dst) in self._H
+
+    def get_quality(self, cam_src: int, cam_dst: int) -> Optional[float]:
+        """Mean reprojection error in px.  Lower = better.  None = no H."""
+        return self._reproj_err.get((cam_src, cam_dst))
+
+    def get_inlier_count(self, cam_src: int, cam_dst: int) -> int:
+        return self._inlier_count.get((cam_src, cam_dst), 0)
+
+    def get_pair_count(self, cam_src: int, cam_dst: int) -> int:
+        return len(self._pairs.get((cam_src, cam_dst), []))
+
+    def get_all_stats(self) -> dict:
+        """Summary for debugging / UI."""
+        stats = {}
+        for key in self._H:
+            stats[f"{key[0]}->{key[1]}"] = {
+                'pairs': len(self._pairs.get(key, [])),
+                'inliers': self._inlier_count.get(key, 0),
+                'reproj_err': round(self._reproj_err.get(key, -1), 2),
+            }
+        return stats
+
+    def invalidate(self, cam_src: int, cam_dst: int):
+        """Flush homography when camera moves significantly."""
+        for key in [(cam_src, cam_dst), (cam_dst, cam_src)]:
+            self._pairs.pop(key, None)
+            self._H.pop(key, None)
+            self._reproj_err.pop(key, None)
+            self._inlier_count.pop(key, None)
+            self._add_count.pop(key, None)
+
+    # ── Internal ──────────────────────────────────────────────────
+
+    def _estimate(self, key: Tuple[int, int]):
+        pairs = self._pairs.get(key)
+        if pairs is None or len(pairs) < self.min_pairs:
+            return
+        src = np.array([p[0] for p in pairs], dtype=np.float64)
+        dst = np.array([p[1] for p in pairs], dtype=np.float64)
+        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, self.ransac_thresh)
+        if H is None:
+            return
+        inlier_mask = mask.ravel().astype(bool)
+        n_inliers = int(inlier_mask.sum())
+        if n_inliers < self.min_pairs:
+            return  # not enough inliers — unreliable
+        # Compute reprojection error on inliers
+        src_in = src[inlier_mask]
+        dst_in = dst[inlier_mask]
+        ones = np.ones((len(src_in), 1))
+        pts_h = np.hstack([src_in, ones])  # Nx3
+        proj = (H @ pts_h.T).T  # Nx3
+        w = proj[:, 2:3]
+        w[np.abs(w) < 1e-8] = 1e-8
+        proj_2d = proj[:, :2] / w
+        err = np.linalg.norm(proj_2d - dst_in, axis=1)
+        mean_err = float(np.mean(err))
+        # Quality gate — if error is too large, camera may have moved
+        if mean_err > 50.0:
+            return
+        self._H[key] = H
+        self._reproj_err[key] = mean_err
+        self._inlier_count[key] = n_inliers
 
 
 class CoordinateTransform:
@@ -202,6 +367,9 @@ class WorldModel:
         
         # Per-sensor trust scores (camera_id -> trust in [0.1, 1.0])
         self.sensor_trust: Dict[int, float] = defaultdict(lambda: 1.0)
+
+        # Cross-camera ground-plane homography (self-calibrating)
+        self.cross_camera_homography = CrossCameraHomography()
         
         self.stats = {
             'objects_tracked': 0,
@@ -474,6 +642,27 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
             norm = np.linalg.norm(obj.feature_vector) + 1e-6
             obj.feature_vector = obj.feature_vector / norm
 
+    # ── Collect cross-camera foot-point correspondences ────────────
+    # When this object is simultaneously visible from multiple cameras,
+    # record foot-point pairs to build the ground-plane homography.
+    this_cam = track.camera_id
+    this_foot = (track.center[0], float(track.bbox[3]))  # bottom-center
+    for other_cam, other_tid in list(obj.source_tracks.items()):
+        if other_cam == this_cam:
+            continue
+        other_time = obj.camera_last_seen.get(other_cam, 0)
+        if (current_time - other_time) > 0.5:
+            continue  # other camera's observation is stale
+        other_pos = obj.camera_pixel_positions.get(other_cam)
+        other_bsz = obj.camera_bbox_sizes.get(other_cam)
+        if other_pos is None or other_bsz is None:
+            continue
+        # Reconstruct other camera's foot point from its stored center + half-height
+        other_foot = (other_pos[0], other_pos[1] + other_bsz[1] / 2.0)
+        self.cross_camera_homography.add_correspondence(
+            other_cam, this_cam, other_foot, this_foot
+        )
+
     # Store in history
     self.object_history[object_id].append({
         'timestamp': current_time,
@@ -599,8 +788,12 @@ def _wm_cleanup_old_objects(self, current_time: float, max_age: float = 5.0):
 def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: float) -> List[PredictedTarget]:
     """Generate predicted targets for a specific camera.
 
-    Uses pixel-space tracking data when available (works for uncalibrated
-    cameras) and falls back to world→pixel transform as a last resort.
+    Two projection paths:
+      A) Homography — if another camera currently sees the person AND a
+         learned ground-plane H exists, project the foot point across.
+         Works even if THIS camera has NEVER seen the person.
+      B) Pixel extrapolation (fallback) — if this camera previously saw
+         the person, slide last-known position by velocity × time.
     """
     predictions = []
     fw, fh = float(settings.frame_width), float(settings.frame_height)
@@ -610,44 +803,78 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
         if camera_id in obj.source_tracks:
             continue
 
-        # Per-camera time since last seen (not shared obj.last_update)
+        # Global time since any camera last saw this object
+        time_since_global = current_time - obj.last_update
+        if time_since_global > self.prediction_horizon:
+            continue
+
+        predicted_pixel = None
+        bw, bh = 100.0, 200.0
+        pv = (0.0, 0.0)
+        from_homography = False
         time_since_seen = current_time - obj.camera_last_seen.get(camera_id, obj.last_update)
-        if time_since_seen > self.prediction_horizon:
-            continue
 
-        # ── Only predict for objects THIS camera previously tracked ──
-        # If this camera never saw the person, we have no pixel-space
-        # data to place them — skip to avoid false ghost predictions.
-        if camera_id not in obj.camera_pixel_positions:
-            continue
+        # ── Path A: Cross-camera HOMOGRAPHY projection ───────────
+        # If the person is currently tracked by another camera AND we
+        # have a homography from that camera to this one, project the
+        # foot point across views.  This is the primary, accurate path.
+        source_cam = obj.last_seen_camera
+        source_fresh = (current_time - obj.camera_last_seen.get(source_cam, 0)) < 1.0
+        if (source_cam != camera_id
+                and source_cam in obj.camera_pixel_positions
+                and source_fresh
+                and self.cross_camera_homography.has_homography(source_cam, camera_id)):
+            src_pos = obj.camera_pixel_positions[source_cam]
+            src_bsz = obj.camera_bbox_sizes.get(source_cam, obj.bbox_size)
+            src_foot = (src_pos[0], src_pos[1] + src_bsz[1] / 2.0)
+            result = self.cross_camera_homography.project_bbox(
+                source_cam, camera_id, src_foot, src_bsz[1], src_bsz[0]
+            )
+            if result is not None:
+                dst_foot, est_w, est_h = result
+                # Foot point → center = move up by half height
+                cx, cy = dst_foot[0], dst_foot[1] - est_h / 2.0
+                bw, bh = est_w, est_h
+                predicted_pixel = (cx, cy)
+                from_homography = True
+                time_since_seen = current_time - obj.camera_last_seen.get(source_cam, obj.last_update)
 
-        last_pos = obj.camera_pixel_positions[camera_id]
-        pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
-        # pv is pixels/second; time_since_seen is seconds
-        dx = pv[0] * time_since_seen
-        dy = pv[1] * time_since_seen
-        # Cap extrapolation to prevent predictions flying off-screen
-        max_extrap = 80.0
-        extrap_dist = (dx**2 + dy**2) ** 0.5
-        if extrap_dist > max_extrap:
-            s = max_extrap / max(extrap_dist, 1e-6)
-            dx *= s
-            dy *= s
-        predicted_pixel = (last_pos[0] + dx, last_pos[1] + dy)
-        bw, bh = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
-        if bw < 10 or bh < 10:
-            fb = obj.bbox_size if obj.bbox_size[0] >= 10 and obj.bbox_size[1] >= 10 else (100.0, 200.0)
-            bw, bh = fb
+        # ── Path B: Pixel-space EXTRAPOLATION (fallback) ──────────
+        if predicted_pixel is None:
+            if camera_id not in obj.camera_pixel_positions:
+                continue  # never seen here + no homography → skip
+            cam_time = current_time - obj.camera_last_seen.get(camera_id, obj.last_update)
+            if cam_time > self.prediction_horizon:
+                continue
+            time_since_seen = cam_time
+            last_pos = obj.camera_pixel_positions[camera_id]
+            pv = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
+            dx = pv[0] * time_since_seen
+            dy = pv[1] * time_since_seen
+            max_extrap = 80.0
+            extrap_dist = (dx**2 + dy**2) ** 0.5
+            if extrap_dist > max_extrap:
+                s = max_extrap / max(extrap_dist, 1e-6)
+                dx *= s
+                dy *= s
+            predicted_pixel = (last_pos[0] + dx, last_pos[1] + dy)
+            bw_c, bh_c = obj.camera_bbox_sizes.get(camera_id, obj.bbox_size)
+            if bw_c >= 10 and bh_c >= 10:
+                bw, bh = bw_c, bh_c
 
-        # Clamp to frame bounds
+        # ── Common: clamp, bbox, confidence, keypoints ────────────
         px = max(bw / 2, min(fw - bw / 2, predicted_pixel[0]))
         py = max(bh / 2, min(fh - bh / 2, predicted_pixel[1]))
         predicted_pixel = (px, py)
 
         predicted_bbox = (px - bw / 2, py - bh / 2, px + bw / 2, py + bh / 2)
-        confidence = obj.confidence * max(0.1, 1.0 - time_since_seen / self.prediction_horizon)
+        # Homography projections are real-time — higher base confidence
+        if from_homography:
+            confidence = obj.confidence * max(0.3, 1.0 - time_since_seen / 3.0)
+        else:
+            confidence = obj.confidence * max(0.1, 1.0 - time_since_seen / self.prediction_horizon)
 
-        # ── Project keypoints ──────────────────────────────────────
+        # Project keypoints
         projected_kp = None
         source_kp = obj.camera_keypoints.get(obj.last_seen_camera) or obj.keypoints
         src_bsz = obj.camera_bbox_sizes.get(obj.last_seen_camera, obj.bbox_size)
@@ -663,9 +890,10 @@ def _wm_generate_predictions_for_camera(self, camera_id: int, current_time: floa
             predicted_center=predicted_pixel,
             confidence=confidence,
             time_since_seen=time_since_seen,
-            velocity_projection=(pv[0], pv[1]),  # pixel-space velocity (px/s)
+            velocity_projection=(pv[0], pv[1]),
             source_camera=obj.last_seen_camera,
             keypoints=projected_kp,
+            homography_source=from_homography,
         )
 
         predictions.append(prediction)
@@ -730,6 +958,10 @@ def _project_keypoints_to_camera(src_kps: list, src_bbox_size: Tuple[float, floa
     return projected
 
 
+def _wm_get_homography_stats(self) -> dict:
+    """Return cross-camera homography status for UI / debugging."""
+    return self.cross_camera_homography.get_all_stats()
+
 # Attach all methods to WorldModel
 WorldModel.update_with_tracking_results = _wm_update_with_tracking_results
 WorldModel._process_camera_tracks = _wm_process_camera_tracks
@@ -741,3 +973,4 @@ WorldModel.generate_predictions_for_camera = _wm_generate_predictions_for_camera
 WorldModel.get_world_objects = _wm_get_world_objects
 WorldModel.get_object_history = _wm_get_object_history
 WorldModel.get_stats = _wm_get_stats
+WorldModel.get_homography_stats = _wm_get_homography_stats

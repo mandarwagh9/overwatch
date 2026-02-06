@@ -275,30 +275,33 @@ const CameraDisplay = ({
       const centerY = (y1 + y2) / 2;
       const hasKeypoints = prediction.keypoints && prediction.keypoints.length >= 17;
       const srcCam = prediction.source_camera ?? -1;
+      const isHomography = prediction.homography_source === true;
+
+      // Color scheme: green for homography (accurate), red for extrapolation (guess)
+      const ghostColor = isHomography ? 'rgba(0, 255, 120, 0.85)' : 'rgba(255, 100, 100, 0.9)';
+      const bgColor = isHomography ? 'rgba(0, 255, 120, 0.75)' : 'rgba(255, 100, 100, 0.75)';
+      const methodTag = isHomography ? 'H-PROJ' : 'EXTRAP';
 
       if (hasKeypoints) {
         // ─── GHOST SKELETON MODE ───────────────────────────────
-        // Render the stick figure as a glowing cyan ghost
-        drawSkeleton(ctx, prediction.keypoints, 'rgba(0, 220, 255, 0.85)', 3, true);
+        drawSkeleton(ctx, prediction.keypoints, ghostColor, 3, true);
 
-        // Ghost label: "GHOST — seen by Cam X"
         ctx.save();
         ctx.setLineDash([]);
         ctx.shadowBlur = 0;
         const ghostLabel = srcCam >= 0
-          ? `GHOST — seen by Cam ${srcCam}`
-          : `GHOST — inferred`;
+          ? `GHOST [${methodTag}] — Cam ${srcCam}`
+          : `GHOST [${methodTag}]`;
         ctx.font = 'bold 11px "Courier New", monospace';
         const tw = ctx.measureText(ghostLabel).width;
         const lx = centerX - tw / 2 - 6;
         const ly = y1 - 26;
-
-        // Label background
-        ctx.fillStyle = 'rgba(0, 220, 255, 0.75)';
-        ctx.beginPath();
         const r = 3;
         const lw = tw + 12;
         const lh = 20;
+
+        ctx.fillStyle = bgColor;
+        ctx.beginPath();
         ctx.moveTo(lx + r, ly);
         ctx.lineTo(lx + lw - r, ly);
         ctx.quadraticCurveTo(lx + lw, ly, lx + lw, ly + r);
@@ -311,43 +314,56 @@ const CameraDisplay = ({
         ctx.closePath();
         ctx.fill();
 
-        // Label text
         ctx.fillStyle = '#000';
         ctx.fillText(ghostLabel, lx + 6, ly + 14);
 
-        // Confidence + age below skeleton
         const infoLabel = `${(prediction.confidence * 100).toFixed(0)}% · ${prediction.time_since_seen.toFixed(1)}s ago`;
-        ctx.fillStyle = 'rgba(0, 220, 255, 0.7)';
+        ctx.fillStyle = ghostColor;
         ctx.font = '10px "Courier New", monospace';
         ctx.fillText(infoLabel, centerX - ctx.measureText(infoLabel).width / 2, y2 + 14);
         ctx.restore();
       } else {
-        // ─── FALLBACK: Red dashed box (no keypoints) ───────────
+        // ─── BOX MODE (no keypoints) ───────────────────────────
         ctx.save();
-        ctx.setLineDash([5, 5]);
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = 'rgba(255, 100, 100, 0.9)';
-        ctx.fillStyle = 'rgba(255, 100, 100, 0.08)';
+
+        if (isHomography) {
+          // Homography: solid green box with glow
+          ctx.shadowColor = '#00ff78';
+          ctx.shadowBlur = 10;
+          ctx.setLineDash([]);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = ghostColor;
+          ctx.fillStyle = 'rgba(0, 255, 120, 0.06)';
+        } else {
+          // Extrapolation: red dashed box
+          ctx.setLineDash([5, 5]);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = ghostColor;
+          ctx.fillStyle = 'rgba(255, 100, 100, 0.08)';
+        }
         ctx.strokeRect(x1, y1, width, height);
         ctx.fillRect(x1, y1, width, height);
 
         // Pulsing center dot
+        ctx.shadowBlur = 0;
         const pulse = Math.sin(Date.now() / 200) * 0.3 + 0.7;
-        ctx.fillStyle = `rgba(255, 100, 100, ${pulse * 0.9})`;
+        ctx.fillStyle = isHomography
+          ? `rgba(0, 255, 120, ${pulse * 0.9})`
+          : `rgba(255, 100, 100, ${pulse * 0.9})`;
         ctx.beginPath();
         ctx.arc(centerX, centerY, 6, 0, 2 * Math.PI);
         ctx.fill();
 
         // Info label
         ctx.setLineDash([]);
-        ctx.fillStyle = 'rgba(255, 100, 100, 0.9)';
-        ctx.fillRect(x1, y1 - 35, 140, 30);
+        ctx.fillStyle = bgColor;
+        ctx.fillRect(x1, y1 - 40, 180, 35);
         ctx.fillStyle = '#ffffff';
-        ctx.font = '12px Arial';
-        const predLabel = `Predicted ${(prediction.confidence * 100).toFixed(0)}%`;
+        ctx.font = 'bold 11px "Courier New", monospace';
+        const predLabel = `${methodTag} ${(prediction.confidence * 100).toFixed(0)}% — Cam ${srcCam}`;
         const timeLabel = `${prediction.time_since_seen.toFixed(1)}s ago`;
-        ctx.fillText(predLabel, x1 + 4, y1 - 20);
-        ctx.fillText(timeLabel, x1 + 4, y1 - 8);
+        ctx.fillText(predLabel, x1 + 4, y1 - 24);
+        ctx.fillText(timeLabel, x1 + 4, y1 - 10);
         ctx.restore();
       }
     });

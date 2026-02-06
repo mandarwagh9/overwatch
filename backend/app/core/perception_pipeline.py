@@ -188,6 +188,7 @@ class PerceptionPipeline:
             'cameras_active': len(camera_frames),
             'world_objects': len(world_objs),
             'ticks': self._tick_count,
+            'homography': self.world_model.get_homography_stats(),
         }
 
         # 6. Publish
@@ -281,6 +282,7 @@ def _ser_pred(pred, scale=1.0) -> dict:
         'type': 'prediction',
         'inferred': True,
         'source_camera': getattr(pred, 'source_camera', -1),
+        'homography_source': getattr(pred, 'homography_source', False),
     }
     if pred.keypoints is not None:
         d['keypoints'] = [(kp[0]*scale, kp[1]*scale, kp[2]) for kp in pred.keypoints]
