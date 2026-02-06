@@ -46,7 +46,7 @@ The system runs a **singleton perception pipeline** — detection, tracking, and
 | **Cross-Camera Re-ID** | 64-dim HSV histogram descriptors, L2-normalized, EMA-smoothed (α=0.3) |
 | **Sensor Trust Scoring** | Per-sensor trust ∈ [0.1, 1.0] — increases for consistent measurements, decays for innovation outliers |
 | **Cross-Camera Homography** | Self-calibrating ground-plane H from shared foot-point observations via `cv2.findHomography` + RANSAC — projects person positions across camera views in <0.1ms |
-| **Ghost Predictions** | Primary: homography projection (green, real-time). Fallback: pixel extrapolation (red, up to 5s) |
+| **3-Path Ghost Predictions** | Path A: homography projection from ANY source camera (green). Path B: pixel extrapolation with adaptive budget (red). Path C: world-coordinate pinhole projection fallback (orange). Ensures ghosts appear even when no homography exists and the target camera has never seen the person. |
 
 ### Platform
 | Capability | Implementation |
@@ -194,7 +194,7 @@ cd overwatch
 mkdir certs
 openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
   -days 365 -nodes -subj "/CN=overwatch" \
-  -addext "subjectAltName=IP:192.168.1.12,IP:127.0.0.1,DNS:localhost"
+  -addext "subjectAltName=IP:192.168.1.4,IP:127.0.0.1,DNS:localhost"
 ```
 
 ### 3. Backend Setup
@@ -227,7 +227,7 @@ npm install
 Create `frontend/.env`:
 
 ```env
-REACT_APP_BACKEND_HOST=192.168.1.12
+REACT_APP_BACKEND_HOST=192.168.1.4
 REACT_APP_BACKEND_PORT=8000
 ```
 
@@ -428,17 +428,21 @@ Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }
 
 ---
 
-## 🎯 AR Overlay System
+## 🎯 AR Overlay System — EagleEye Tactical HUD
 
-The frontend renders three distinct visualization layers on a canvas overlay:
+The frontend renders an Anduril EagleEye-inspired tactical overlay with diamond markers, compass ribbon, and threat rings:
 
 | Layer | Color | Elements |
 |---|---|---|
-| **Detections** | Cyan `#00ffc8` | Corner brackets, center crosshair, `PERSON` confidence pill with pointer |
-| **Tracks** | Yellow `#ffff00` | Bounding box, center dot, velocity vector arrow with arrowhead, track ID label |
-| **Predictions** | Red `#ff4444` dashed | Ghost bounding box, pulsing center dot (sine animation), confidence + time-ago label |
+| **Detections** | Slate-blue `#64b5f6` | Diamond markers, corner brackets, `PERSON` confidence pill, BLOS indicators |
+| **Tracks** | Amber `#ffd740` | Diamond/chevron markers, velocity vector arrows, track ID callouts |
+| **Predictions (H-PROJ)** | Green `#00ff82` solid | Homography-projected ghost — accurate, real-time cross-camera |
+| **Predictions (EXTRAP)** | Red `#ff5050` dashed | Pixel-extrapolated ghost — time-decaying dead-reckoning |
+| **Predictions (WORLD)** | Orange `#ff9800` dashed | World-coordinate projection — rough pinhole-model fallback |
+| **Compass Ribbon** | — | Heading ribbon with N/E/S/W and bearing tick marks |
+| **Threat Ring** | Per-IFF color | Inner ring around camera feed showing bearing to off-screen predictions |
 
-Detection overlays show what the model sees *right now*. Track overlays show persistent identity across frames. Prediction overlays show cross-camera dead-reckoning — objects last seen by another camera, projected into the current view.
+Detection overlays show what the model sees *right now*. Track overlays show persistent identity across frames. Predictions show cross-camera projections — green for homography (most accurate), orange for world-model fallback (rough but always available), red for pixel extrapolation (last resort).
 
 ---
 
@@ -535,10 +539,49 @@ python scripts/check_logs.py
 python scripts/check_status.py
 
 # Or via SSH
-ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
+ssh mandar@192.168.1.4 'tail -50 /tmp/overwatch.log'
 ```
 </details>
+<details>
+<summary><strong>Ghost predictions not appearing on a camera</strong></summary>
 
+If a person is visible in Camera 0 but no ghost appears in Camera 1:
+
+1. **Check homography status** — look for `H learned: cam0→cam1` in logs. If missing, walk through both camera FOVs simultaneously to collect correspondence pairs.
+2. **Check world projection** — Path C (orange ghost) should always work. If missing, verify `_simple_world_to_pixel()` camera positions match your physical setup.
+3. **Check prediction horizon** — if `time_since_seen > prediction_horizon` (default 5s), the object is pruned. The person must be actively tracked by at least one camera.
+4. **Check source_tracks** — if Camera 1 is currently tracking the person (in `source_tracks`), no prediction is generated (it's a live track, not a ghost).
+</details>
+
+<details>
+<summary><strong>Orange (WORLD) ghosts are in the wrong position</strong></summary>
+
+Path C world projection uses hardcoded camera positions. If ghosts land far from the actual person:
+1. Edit `_simple_world_to_pixel()` in `world_model.py`
+2. Set `camera_positions` dict to match your physical camera locations (x, y, z in meters)
+3. Adjust `fov_deg` (default 60°) to match your camera lens
+4. Redeploy: `python scripts/deploy_v2.py && python scripts/force_restart.py`
+</details>
+
+<details>
+<summary><strong>Ghosts flicker between green and orange</strong></summary>
+
+This happens when the homography is borderline — sometimes projection succeeds (green), sometimes it fails and falls through to Path C (orange). Causes:
+- Homography was learned from too few correspondence pairs (minimum 4, but 8+ is more stable)
+- Person is near the edge of the overlap zone where reprojection error is highest
+- Walk more paths through the camera overlap to collect additional pairs and improve $H$ stability
+</details>
+
+<details>
+<summary><strong>Two people merged into one ghost</strong></summary>
+
+Cross-camera re-ID matched two different people as the same world object. This can happen with:
+- Identical clothing (same HSV histogram)
+- People standing < 2m apart in world coordinates
+- Temporary occlusion causing track ID swap
+
+The system should self-correct once the people separate spatially. If persistent, the appearance descriptor EMA (α=0.3) will gradually diverge.
+</details>
 ---
 
 ## 🧰 Tech Stack
@@ -593,10 +636,70 @@ $$\begin{pmatrix} x' \\ y' \\ w \end{pmatrix} = H \cdot \begin{pmatrix} x \\ y \
 
 ### Visual Indicators
 
-| Ghost Color | Source | Meaning |
+| Ghost Color | Tag | Source | Meaning |
+|---|---|---|---|
+| 🟢 Green solid | `H-PROJ` | Path A — Homography | Cross-camera ground-plane projection. Tries **all** source cameras with valid $H$ to the target camera, picks the freshest. Most accurate. |
+| 🟠 Orange dashed | `WORLD` | Path C — World projection | Fused 3D world position → pinhole camera model. Rough but **always works** even when no homography exists and target camera has never seen the person. |
+| 🔴 Red dashed | `EXTRAP` | Path B — Pixel extrapolation | Slides last-known pixel position by velocity × time. Adaptive budget: `min(250px, 80 + 40 × t)`. Only works if the target camera previously saw the person. |
+
+---
+
+## ⚠️ Edge Cases & Known Limitations
+
+### Cross-Camera Prediction
+
+| Edge Case | Behavior | Mitigation |
 |---|---|---|
-| 🟢 Green solid box | `H-PROJ` | Homography projection — **real-time, accurate** |
-| 🔴 Red dashed box | `EXTRAP` | Pixel extrapolation — **time-decaying guess** |
+| **No homography learned yet** | Path A fails silently. System falls through to Path B (extrap) or Path C (world projection). Ghost appears orange instead of green. | Walk through overlapping camera FOVs to collect ≥4 foot-point correspondence pairs. Homography auto-learns within ~5 seconds of co-visibility. |
+| **Camera moved after calibration** | Homography reprojection error spikes. Stale $H$ matrix produces offset ghosts. | The system monitors reprojection error and flushes the homography when error exceeds 50px. Walk through overlap again to re-learn. |
+| **Person only seen by one camera ever** | Path A has no source camera to project from. Path B has no pixel history for the target camera. Path C is the only option — ghost is orange and position is approximate. | This is the primary reason Path C (world projection) was added. Accuracy depends on how well the hardcoded camera positions in `_simple_world_to_pixel()` match physical reality. |
+| **Cameras with no overlapping FOV** | No co-visible observations → no foot-point pairs → no homography learned. Path A never activates between these cameras. | Path C world projection still works. For better accuracy, calibrate camera extrinsics in `_simple_world_to_pixel()` (currently hardcoded positions). |
+| **Object behind the camera (world projection)** | Pinhole model projects negative-depth points to invalid pixels. | Path C checks that projected pixel is within `[-0.5×W, 1.5×W]` and `[-0.5×H, 1.5×H]`. Out-of-bounds projections are silently dropped. |
+| **Rapid camera switching (DHCP IP change)** | If the Jetson's IP changes, `frontend/.env` and all deploy scripts point to the wrong address. | Update `REACT_APP_BACKEND_HOST` in `frontend/.env` and run `grep -r '192.168.1' scripts/` to catch all references. Consider using mDNS hostname instead. |
+
+### Tracking & Re-ID
+
+| Edge Case | Behavior | Mitigation |
+|---|---|---|
+| **Identical clothing (twins/uniforms)** | HSV histogram descriptors are nearly identical. Re-ID may merge two people into one world object. | The system uses spatial distance (< 2m) AND appearance similarity (> 0.5 cosine) for cross-camera matching. If two people are far apart, they stay separate even with identical appearance. |
+| **Person temporarily fully occluded** | Track coasts for `prediction_horizon` seconds (default 5s). Prediction confidence decays linearly. After timeout, track is pruned. | Increase `prediction_horizon` in config if longer persistence is needed. Kalman velocity estimate keeps the ghost moving during occlusion. |
+| **Crowded scenes (>10 people)** | Hungarian assignment cost matrix grows as $O(n \times m)$. Appearance feature extraction adds ~0.1ms per detection. | YOLOv8n NMS already limits detections. The pipeline runs single-threaded on GPU — throughput may drop below target FPS with many detections. |
+| **Person enters from off-screen** | No pixel history, no world object yet. First detection creates a new track with high measurement noise. | Kalman filter initializes with large uncertainty. Trust builds over 5–10 consistent frames. Ghost predictions only appear after the person is fused into the world model. |
+
+### Sensor Fusion
+
+| Edge Case | Behavior | Mitigation |
+|---|---|---|
+| **Mobile GPS jitter indoors** | GPS accuracy can be 10–50m indoors. Kalman filter receives noisy position updates. | Sensor trust scoring automatically down-weights GPS sources with high innovation. The trust floor (0.1) prevents complete rejection. |
+| **Mobile phone loses WebSocket** | Virtual camera stream stops. Existing tracks from that camera coast via Kalman prediction. | Tracks persist for `prediction_horizon` seconds. Phone auto-reconnects and gets a new camera ID. |
+| **Clock drift between cameras** | Frame timestamps from different cameras may not be synchronized. Co-visibility matching uses a 0.5s window. | The 0.5s co-visibility window is generous enough for typical LAN latency. NTP sync across devices is recommended for sub-100ms accuracy. |
+
+### Network & Deployment
+
+| Edge Case | Behavior | Mitigation |
+|---|---|---|
+| **Self-signed cert rejected by browser** | WebSocket connection fails silently. Frontend shows no camera feeds. | Navigate to `https://<jetson-ip>:8000` directly and accept the certificate. This must be done once per browser session. |
+| **Jetson runs out of GPU memory** | TensorRT engine uses ~30 MiB. With 4 cameras at 640×640, CUDA memory usage is ~200 MiB total. Orin Nano has 8 GB shared. | Monitor with `tegrastats`. If memory is tight, reduce `MAX_CAMERAS` or input resolution. |
+| **Backend crash / watchdog** | Uvicorn runs with `--reload` (WatchFiles). File changes trigger auto-restart. Crash requires manual `python scripts/force_restart.py`. | Consider adding systemd service with `Restart=always` for production. |
+| **Multiple viewers cause lag** | The singleton pipeline runs once per tick regardless of viewers. However, msgpack serialization + WebSocket send scales linearly with viewer count. | Pre-serialized snapshots minimize per-viewer cost. For >10 viewers, consider adding a pub/sub layer (Redis, NATS). |
+
+### World Projection (Path C) Accuracy
+
+Path C uses a simplified pinhole camera model with **hardcoded camera positions**:
+
+```python
+camera_positions = {
+    0: (0, 0, 2),    # Origin, 2m height
+    1: (5, 0, 2),    # 5m to the right
+    2: (0, 5, 2),    # 5m forward
+    3: (-5, 0, 2),   # 5m to the left
+}
+```
+
+These positions assume a rectangular room setup. If your cameras are arranged differently:
+1. Edit `_simple_world_to_pixel()` in [world_model.py](backend/app/core/world_model.py) with actual camera positions
+2. Adjust the FOV constant (currently 60°) to match your cameras
+3. Path C accuracy improves dramatically with correct extrinsics — ghosts land within ~50px of true position vs ~200px with wrong positions
 
 ---
 
