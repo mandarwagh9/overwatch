@@ -295,6 +295,7 @@ class WebSocketManager:
         self.detection_engine = None
         self.tracking_manager = None
         self.world_model = None
+        self.pipeline = None  # PerceptionPipeline (shared singleton)
     
     def set_managers(self, camera_manager, detection_engine, tracking_manager, world_model):
         """Set manager references after initialization"""
@@ -302,6 +303,10 @@ class WebSocketManager:
         self.detection_engine = detection_engine
         self.tracking_manager = tracking_manager
         self.world_model = world_model
+    
+    def set_pipeline(self, pipeline):
+        """Set the shared perception pipeline."""
+        self.pipeline = pipeline
     
     async def connect(self, websocket: WebSocket) -> str:
         """Handle new WebSocket connection (viewer role)"""
@@ -393,17 +398,12 @@ class WebSocketManager:
         if not connection_id:
             return
         
-        # Start main processing loop
         try:
-            while True:
-                # Process frames from all cameras
-                await self._process_frame_cycle(connection_id)
-                
-                # Small delay to maintain target FPS
-                await asyncio.sleep(1.0 / settings.target_fps)
-        
+            if self.pipeline:
+                await self._pipeline_viewer_loop(connection_id)
+            else:
+                await self._legacy_viewer_loop(connection_id)
         except asyncio.CancelledError:
-            # Graceful shutdown - don't log as error
             pass
         except WebSocketDisconnect:
             self.disconnect(websocket)
@@ -411,10 +411,48 @@ class WebSocketManager:
             print(f"❌ Client loop error for {connection_id}: {e}")
             self.disconnect(websocket)
     
+    async def _pipeline_viewer_loop(self, connection_id: str):
+        """Read from shared pipeline snapshot — no redundant GPU work.
+        
+        Each viewer polls the pipeline at the target FPS rate.  If the pipeline
+        produced a new snapshot since the last send, the viewer sends it.
+        Slow viewers automatically skip intermediate frames and always get
+        the latest state.
+        """
+        last_gen = 0
+        interval = 1.0 / settings.target_fps
+        
+        while connection_id in self.connection_manager.active_connections:
+            snapshot = self.pipeline.latest
+            if snapshot and snapshot.generation > last_gen:
+                last_gen = snapshot.generation
+                
+                # Send camera frame packets
+                for packed in snapshot.camera_packets.values():
+                    ok = await self.connection_manager.send_to_client(connection_id, packed)
+                    if not ok:
+                        return
+                
+                # Send prediction packets for inactive cameras
+                for packed in snapshot.prediction_packets.values():
+                    await self.connection_manager.send_to_client(connection_id, packed)
+                
+                # Send world_update with all fused objects
+                if snapshot.world_update_packet:
+                    await self.connection_manager.send_to_client(connection_id, snapshot.world_update_packet)
+            
+            await asyncio.sleep(interval)
+    
+    async def _legacy_viewer_loop(self, connection_id: str):
+        """Fallback per-viewer processing loop (original behaviour)."""
+        while True:
+            await self._process_frame_cycle(connection_id)
+            await asyncio.sleep(1.0 / settings.target_fps)
     async def handle_camera_source_loop(self, websocket: WebSocket, camera_id: int):
         """Receive binary JPEG frames from a mobile camera source.
         
         Each incoming binary message is a raw JPEG image.
+        Text messages can carry sensor data (GPS + IMU orientation).
         The loop injects each frame into the CameraManager's VirtualCamera.
         """
         frame_count = 0
@@ -439,13 +477,20 @@ class WebSocketManager:
                         fps = frame_count / elapsed if elapsed > 0 else 0
                         print(f"📱 Camera {camera_id}: {frame_count} frames, {fps:.1f} avg FPS")
                 
-                # Handle text control messages (e.g., stop)
+                # Handle text control / sensor messages
                 elif "text" in message and message["text"]:
                     try:
                         ctrl = json.loads(message["text"])
-                        if ctrl.get("type") == "stop":
+                        msg_type = ctrl.get("type")
+                        
+                        if msg_type == "stop":
                             print(f"📱 Camera {camera_id}: received stop command")
                             break
+                        
+                        elif msg_type == "sensor_data":
+                            # GPS + IMU data from mobile device
+                            self._handle_sensor_data(camera_id, ctrl)
+                        
                     except json.JSONDecodeError:
                         pass
         
@@ -458,6 +503,61 @@ class WebSocketManager:
             self.camera_manager.unregister_virtual_camera(camera_id)
             elapsed = time.time() - start_time
             print(f"📱 Camera {camera_id} disconnected: {frame_count} frames in {elapsed:.1f}s")
+    
+    def _handle_sensor_data(self, camera_id: int, data: dict):
+        """Process GPS + IMU sensor data from a mobile camera.
+        
+        Expected format:
+        {
+            "type": "sensor_data",
+            "gps": { "latitude": float, "longitude": float, "altitude": float, "accuracy": float },
+            "orientation": { "alpha": float, "beta": float, "gamma": float },
+            "timestamp": float
+        }
+        """
+        try:
+            import math
+            from app.core.world_model import CameraCalibration
+            
+            gps = data.get("gps")
+            orientation = data.get("orientation")
+            
+            if gps and self.world_model:
+                lat = gps.get("latitude", 0)
+                lng = gps.get("longitude", 0)
+                alt = gps.get("altitude", 0) or 0
+                
+                # First GPS fix becomes the reference origin
+                if not hasattr(self.world_model, '_gps_reference'):
+                    self.world_model._gps_reference = (lat, lng)
+                    print(f"📍 GPS reference set: {lat:.6f}, {lng:.6f}")
+                
+                ref_lat, ref_lng = self.world_model._gps_reference
+                
+                # Equirectangular projection to local meters
+                meters_per_deg_lat = 111320.0
+                meters_per_deg_lng = 111320.0 * math.cos(math.radians(ref_lat))
+                world_x = (lng - ref_lng) * meters_per_deg_lng
+                world_y = (lat - ref_lat) * meters_per_deg_lat
+                world_z = max(alt, 1.5)
+                
+                # Derive rotation from device orientation
+                yaw = math.radians(orientation.get("alpha", 0)) if orientation else 0.0
+                pitch = math.radians(orientation.get("beta", 0)) if orientation else 0.0
+                roll = math.radians(orientation.get("gamma", 0)) if orientation else 0.0
+                
+                # Update camera calibration with GPS-anchored pose
+                calib = CameraCalibration(
+                    camera_id=camera_id,
+                    position=(world_x, world_y, world_z),
+                    rotation=(roll, pitch, yaw),
+                    focal_length=800,
+                    image_center=(320, 240),
+                )
+                self.world_model.coordinate_transform.add_camera_calibration(calib)
+        
+        except Exception as e:
+            print(f"❌ Sensor data error for camera {camera_id}: {e}")
     
     async def _process_frame_cycle(self, connection_id: str):
         """Process one cycle of frames from all cameras"""
