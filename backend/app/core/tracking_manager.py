@@ -15,6 +15,13 @@ except ImportError:
     print("⚠️ DeepSORT not available, using simple tracking")
     DeepSort = None
 
+try:
+    from scipy.optimize import linear_sum_assignment
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+    print("⚠️ scipy not available, using greedy assignment instead of Hungarian")
+
 from app.config import settings
 from app.core.detection_engine import DetectionResult, Detection
 
@@ -34,6 +41,7 @@ class Track:
     time_since_update: int
     velocity: Tuple[float, float] = (0.0, 0.0)  # dx, dy per frame
     predicted_position: Optional[Tuple[float, float]] = None
+    feature_vector: object = None  # appearance descriptor (np.ndarray)
 
 
 @dataclass
@@ -107,7 +115,8 @@ class SimpleTracker:
                     age=track.age + 1,
                     hits=track.hits + 1,
                     time_since_update=0,
-                    velocity=velocity
+                    velocity=velocity,
+                    feature_vector=detection.feature_vector,
                 )
                 
                 self.tracks[track_id] = updated_track
@@ -135,7 +144,8 @@ class SimpleTracker:
                         hits=track.hits,
                         time_since_update=track.time_since_update,
                         velocity=track.velocity,
-                        predicted_position=predicted_center
+                        predicted_position=predicted_center,
+                        feature_vector=track.feature_vector,  # propagate
                     )
                     
                     self.tracks[track_id] = predicted_track
@@ -157,7 +167,8 @@ class SimpleTracker:
                     class_name=detection.class_name,
                     age=1,
                     hits=1,
-                    time_since_update=0
+                    time_since_update=0,
+                    feature_vector=detection.feature_vector,
                 )
                 
                 self.tracks[self.next_track_id] = new_track
@@ -165,6 +176,145 @@ class SimpleTracker:
                 self.next_track_id += 1
         
         return updated_tracks
+
+
+def _compute_iou(box1: Tuple, box2: Tuple) -> float:
+    """Compute IoU between two (x1,y1,x2,y2) bounding boxes."""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    a1 = max(0.0, box1[2] - box1[0]) * max(0.0, box1[3] - box1[1])
+    a2 = max(0.0, box2[2] - box2[0]) * max(0.0, box2[3] - box2[1])
+    return inter / (a1 + a2 - inter + 1e-6)
+
+
+class HungarianTracker:
+    """Multi-object tracker using Hungarian (Munkres) optimal assignment.
+
+    Cost matrix = 0.6 * IoU_distance + 0.4 * cosine_distance(appearance).
+    Falls back to IoU-only when appearance features are not available.
+    """
+
+    def __init__(self, max_age: int = 30, iou_threshold: float = 0.25):
+        self.tracks: Dict[int, Track] = {}
+        self.next_track_id = 1
+        self.max_age = max_age
+        self.iou_threshold = iou_threshold
+
+    def update(self, detections: List[Detection], camera_id: int, frame_number: int) -> List[Track]:
+        """Update tracks using Hungarian assignment on IoU + appearance cost."""
+        if not self.tracks and not detections:
+            return []
+        if not self.tracks:
+            return self._create_tracks(detections, camera_id)
+        if not detections:
+            return self._coast_all(camera_id)
+
+        track_ids = list(self.tracks.keys())
+        track_list = [self.tracks[tid] for tid in track_ids]
+        n_t, n_d = len(track_list), len(detections)
+
+        # --- Build cost matrix ---
+        cost = np.full((n_t, n_d), 1e6, dtype=np.float64)
+        for i, trk in enumerate(track_list):
+            for j, det in enumerate(detections):
+                iou = _compute_iou(trk.bbox, det.bbox)
+                iou_cost = 1.0 - iou
+                if (trk.feature_vector is not None and
+                        det.feature_vector is not None):
+                    cos_sim = float(np.dot(trk.feature_vector, det.feature_vector))
+                    app_cost = 1.0 - cos_sim
+                    cost[i, j] = 0.6 * iou_cost + 0.4 * app_cost
+                else:
+                    cost[i, j] = iou_cost
+
+        # --- Optimal assignment ---
+        row_ind, col_ind = linear_sum_assignment(cost)
+
+        matched_t, matched_d = set(), set()
+        updated = []
+
+        for r, c in zip(row_ind, col_ind):
+            if _compute_iou(track_list[r].bbox, detections[c].bbox) >= self.iou_threshold:
+                upd = self._update_track(track_list[r], detections[c], camera_id)
+                updated.append(upd)
+                matched_t.add(track_ids[r])
+                matched_d.add(c)
+
+        # Coast unmatched tracks
+        for tid in track_ids:
+            if tid not in matched_t:
+                c = self._coast_track(self.tracks[tid], camera_id)
+                if c is not None:
+                    updated.append(c)
+
+        # Birth new tracks for unmatched detections
+        for j, det in enumerate(detections):
+            if j not in matched_d:
+                updated.append(self._birth_track(det, camera_id))
+
+        return updated
+
+    # ── internal helpers ──
+
+    def _update_track(self, track: Track, det: Detection, cam_id: int) -> Track:
+        vel = (det.center[0] - track.center[0], det.center[1] - track.center[1])
+        upd = Track(
+            track_id=track.track_id, camera_id=cam_id,
+            bbox=det.bbox, center=det.center,
+            confidence=det.confidence, class_id=det.class_id,
+            class_name=det.class_name, age=track.age + 1,
+            hits=track.hits + 1, time_since_update=0,
+            velocity=vel, feature_vector=det.feature_vector,
+        )
+        self.tracks[track.track_id] = upd
+        return upd
+
+    def _coast_track(self, track: Track, cam_id: int) -> Optional[Track]:
+        track.time_since_update += 1
+        if track.time_since_update > self.max_age:
+            self.tracks.pop(track.track_id, None)
+            return None
+        pred_c = (track.center[0] + track.velocity[0],
+                  track.center[1] + track.velocity[1])
+        coasted = Track(
+            track_id=track.track_id, camera_id=cam_id,
+            bbox=track.bbox, center=pred_c,
+            confidence=track.confidence * 0.9,
+            class_id=track.class_id, class_name=track.class_name,
+            age=track.age + 1, hits=track.hits,
+            time_since_update=track.time_since_update,
+            velocity=track.velocity, predicted_position=pred_c,
+            feature_vector=track.feature_vector,
+        )
+        self.tracks[track.track_id] = coasted
+        return coasted
+
+    def _birth_track(self, det: Detection, cam_id: int) -> Track:
+        tid = self.next_track_id
+        self.next_track_id += 1
+        nt = Track(
+            track_id=tid, camera_id=cam_id,
+            bbox=det.bbox, center=det.center,
+            confidence=det.confidence, class_id=det.class_id,
+            class_name=det.class_name, age=1, hits=1,
+            time_since_update=0, feature_vector=det.feature_vector,
+        )
+        self.tracks[tid] = nt
+        return nt
+
+    def _create_tracks(self, dets: List[Detection], cam_id: int) -> List[Track]:
+        return [self._birth_track(d, cam_id) for d in dets]
+
+    def _coast_all(self, cam_id: int) -> List[Track]:
+        result = []
+        for tid in list(self.tracks.keys()):
+            c = self._coast_track(self.tracks[tid], cam_id)
+            if c is not None:
+                result.append(c)
+        return result
 
 
 class DeepSORTTracker:
@@ -271,6 +421,7 @@ class TrackingManager:
     
     def __init__(self):
         self.camera_trackers: Dict[int, SimpleTracker] = {}
+        self.hungarian_trackers: Dict[int, HungarianTracker] = {}
         self.deepsort_tracker = DeepSORTTracker()
         self.use_deepsort = False
         self.global_tracks: Dict[int, Track] = {}  # Global track registry
@@ -290,6 +441,8 @@ class TrackingManager:
         if self.deepsort_tracker.initialize():
             self.use_deepsort = True
             print("✅ DeepSORT tracker initialized")
+        elif SCIPY_AVAILABLE:
+            print("✅ Hungarian (Munkres) tracker active")
         else:
             print("⚠️ Using simple centroid tracker")
         
@@ -305,18 +458,24 @@ class TrackingManager:
         start_time = time.time()
         camera_id = detection_result.camera_id
         
-        # Get or create tracker for this camera
-        if camera_id not in self.camera_trackers:
-            self.camera_trackers[camera_id] = SimpleTracker()
-        
-        # Use appropriate tracker
+        # Use appropriate tracker: DeepSORT > Hungarian > Simple
         if self.use_deepsort and frame is not None:
             tracks = self.deepsort_tracker.update(
                 detection_result.detections, 
                 frame, 
                 camera_id
             )
+        elif SCIPY_AVAILABLE:
+            if camera_id not in self.hungarian_trackers:
+                self.hungarian_trackers[camera_id] = HungarianTracker()
+            tracks = self.hungarian_trackers[camera_id].update(
+                detection_result.detections,
+                camera_id,
+                detection_result.frame_number
+            )
         else:
+            if camera_id not in self.camera_trackers:
+                self.camera_trackers[camera_id] = SimpleTracker()
             tracks = self.camera_trackers[camera_id].update(
                 detection_result.detections,
                 camera_id,
@@ -403,7 +562,7 @@ class TrackingManager:
             'total_tracks': self.stats['total_tracks'],
             'active_tracks': self.stats['active_tracks'],
             'tracks_per_camera': dict(self.stats['tracks_per_camera']),
-            'tracker_type': 'DeepSORT' if self.use_deepsort else 'Simple',
+            'tracker_type': 'DeepSORT' if self.use_deepsort else ('Hungarian' if SCIPY_AVAILABLE else 'Simple'),
             'cameras_active': len(self.camera_trackers)
         }
     
