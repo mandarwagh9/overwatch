@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     trust_decay_rate: float = 0.01  # Per-inconsistency trust decay
     trust_min: float = 0.1  # Minimum trust floor (never fully ignore a sensor)
 
+    # GPS-anchored world model
+    gps_reference_lat: Optional[float] = None  # First GPS fix auto-sets if None
+    gps_reference_lng: Optional[float] = None
+    person_height_m: float = 1.7  # Assumed person height for depth estimation
+    homography_movement_threshold: float = 1.0  # Flush H when camera moves >N metres
+
 
 # Global settings instance
 settings = Settings()

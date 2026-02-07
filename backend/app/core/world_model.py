@@ -18,11 +18,14 @@ from app.config import settings
 class CameraCalibration:
     """Camera calibration and positioning information"""
     camera_id: int
-    position: Tuple[float, float, float]  # x, y, z in world coordinates
+    position: Tuple[float, float, float]  # x, y, z in world coordinates (meters)
     rotation: Tuple[float, float, float]  # roll, pitch, yaw in radians
     focal_length: float
     image_center: Tuple[float, float]  # cx, cy in pixels
     distortion: Optional[List[float]] = None
+    gps_accuracy: float = 5.0  # GPS accuracy in meters (lower = better)
+    last_update: float = 0.0  # timestamp of last GPS update
+    position_at_h_learn: Optional[Tuple[float, float, float]] = None  # camera pos when homography was learned
 
 
 @dataclass
@@ -229,61 +232,128 @@ class CrossCameraHomography:
         self._inlier_count[key] = n_inliers
 
 
+# Assumed average person height in meters (for depth estimation from bbox)
+PERSON_HEIGHT_M = 1.7
+
+
+def _build_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Build a 3×3 rotation matrix that transforms WORLD vectors into CAMERA vectors.
+
+    Coordinate systems:
+      World: +X east, +Y north, +Z up  (GPS/equirectangular)
+      Camera: +X right, +Y down, +Z forward (optical axis, OpenCV convention)
+
+    At identity (roll=pitch=yaw=0) the camera points north (+Y world)
+    held horizontally.  Yaw is compass heading (clockwise-positive),
+    pitch tilts up/down, roll tilts side-to-side.
+    """
+    # Base rotation: world(XYZ) → camera(XYZ) when pointing north horizontally
+    #   world +X (east)  → cam +X (right)
+    #   world +Y (north) → cam +Z (forward)
+    #   world +Z (up)    → cam -Y (up in image)
+    R_base = np.array([
+        [1,  0,  0],
+        [0,  0, -1],
+        [0,  1,  0],
+    ], dtype=float)
+
+    # Device orientation in world frame (compass: clockwise = positive yaw)
+    # Negate yaw because Rz is CCW-positive but compass heading is CW-positive
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(-yaw), np.sin(-yaw)
+
+    Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]], dtype=float)
+    Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]], dtype=float)
+    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=float)
+
+    R_device = Rz @ Ry @ Rx  # device orientation in world frame
+
+    # Full world→camera: undo device rotation, then apply base mapping
+    return R_base @ R_device.T
+
+
 class CoordinateTransform:
-    """Handles coordinate transformations between camera and world space"""
-    
+    """Handles coordinate transformations between camera and world space.
+
+    When a CameraCalibration includes live GPS position and IMU rotation
+    (from a moving phone / body-cam), the transform uses a proper pinhole
+    camera model with a full 3×3 rotation matrix.  For static uncalibrated
+    cameras the simpler hardcoded-position fallback is used.
+    """
+
     def __init__(self):
         self.camera_calibrations: Dict[int, CameraCalibration] = {}
-        
+        # Cache rotation matrices (rebuilt whenever calibration changes)
+        self._R_cache: Dict[int, np.ndarray] = {}
+        self._Rt_cache: Dict[int, np.ndarray] = {}
+
     def add_camera_calibration(self, calibration: CameraCalibration):
-        """Add camera calibration data"""
+        """Add / update camera calibration data"""
         self.camera_calibrations[calibration.camera_id] = calibration
-    
-    def pixel_to_world(self, camera_id: int, pixel_coords: Tuple[float, float], depth: float = 1.0) -> Optional[Tuple[float, float, float]]:
-        """Convert pixel coordinates to world coordinates"""
+        # Pre-compute rotation matrices
+        R = _build_rotation_matrix(*calibration.rotation)
+        self._R_cache[calibration.camera_id] = R
+        self._Rt_cache[calibration.camera_id] = R.T  # inverse rotation (world→cam)
+
+    def pixel_to_world(self, camera_id: int, pixel_coords: Tuple[float, float],
+                       depth: float = 1.0) -> Optional[Tuple[float, float, float]]:
+        """Convert pixel coordinates to world coordinates using rotation-aware projection."""
         if camera_id not in self.camera_calibrations:
-            # Use simple geometric transformation for uncalibrated cameras
             return self._simple_pixel_to_world(camera_id, pixel_coords, depth)
-        
+
         calib = self.camera_calibrations[camera_id]
-        
-        # Convert pixel to normalized camera coordinates
+        R_inv = self._Rt_cache.get(camera_id)  # R^T = R^{-1} for orthogonal R
+        if R_inv is None:
+            R_inv = _build_rotation_matrix(*calib.rotation).T
+
+        # Pixel → normalised camera-frame ray direction
         x_norm = (pixel_coords[0] - calib.image_center[0]) / calib.focal_length
         y_norm = (pixel_coords[1] - calib.image_center[1]) / calib.focal_length
-        
-        # Apply rotation and translation to get world coordinates
-        # Simplified transformation - in practice would use full camera matrix
-        world_x = calib.position[0] + x_norm * depth
-        world_y = calib.position[1] + y_norm * depth
-        world_z = calib.position[2] + depth
-        
-        return (world_x, world_y, world_z)
-    
-    def world_to_pixel(self, camera_id: int, world_coords: Tuple[float, float, float]) -> Optional[Tuple[float, float]]:
-        """Convert world coordinates to pixel coordinates"""
+        ray_cam = np.array([x_norm, y_norm, 1.0], dtype=float)
+
+        # Rotate ray into world frame
+        ray_world = R_inv @ ray_cam
+        ray_len = np.linalg.norm(ray_world)
+        if ray_len < 1e-8:
+            return None
+        ray_world /= ray_len
+
+        # Walk along the ray by `depth` metres
+        pos = np.array(calib.position, dtype=float)
+        world_pt = pos + ray_world * depth
+
+        return (float(world_pt[0]), float(world_pt[1]), float(world_pt[2]))
+
+    def world_to_pixel(self, camera_id: int,
+                       world_coords: Tuple[float, float, float]) -> Optional[Tuple[float, float]]:
+        """Convert world coordinates to pixel coordinates using rotation-aware projection."""
         if camera_id not in self.camera_calibrations:
-            # Use simple geometric transformation for uncalibrated cameras
             return self._simple_world_to_pixel(camera_id, world_coords)
-        
+
         calib = self.camera_calibrations[camera_id]
-        
-        # Transform world coordinates to camera coordinates
-        # Simplified - in practice would use full projection matrix
-        rel_x = world_coords[0] - calib.position[0]
-        rel_y = world_coords[1] - calib.position[1]
-        rel_z = world_coords[2] - calib.position[2]
-        
-        if rel_z <= 0:
-            return None  # Point is behind camera
-        
-        # Project to image plane
-        x_norm = rel_x / rel_z
-        y_norm = rel_y / rel_z
-        
+        R = self._R_cache.get(camera_id)
+        if R is None:
+            R = _build_rotation_matrix(*calib.rotation)
+
+        # Vector from camera position to world point
+        rel_world = np.array(world_coords, dtype=float) - np.array(calib.position, dtype=float)
+
+        # Rotate into camera frame
+        rel_cam = R @ rel_world
+
+        # rel_cam[2] is depth along camera's optical axis
+        if rel_cam[2] <= 0.01:
+            return None  # Point is behind or at camera
+
+        # Perspective divide → normalised image coords
+        x_norm = rel_cam[0] / rel_cam[2]
+        y_norm = rel_cam[1] / rel_cam[2]
+
         pixel_x = x_norm * calib.focal_length + calib.image_center[0]
         pixel_y = y_norm * calib.focal_length + calib.image_center[1]
-        
-        return (pixel_x, pixel_y)
+
+        return (float(pixel_x), float(pixel_y))
     
     def _simple_pixel_to_world(self, camera_id: int, pixel_coords: Tuple[float, float], depth: float) -> Tuple[float, float, float]:
         """Simple transformation for uncalibrated cameras using geometric assumptions"""
@@ -469,12 +539,16 @@ async def _wm_initialize(self):
     print("🌍 World Model initialized")
 
 def _wm_setup_default_cameras(self):
-    """Setup default camera calibrations for demo"""
+    """Setup default camera calibrations for demo.
+
+    Convention: yaw=0 → north, yaw=π/2 → east (clockwise-positive compass heading).
+    Static cameras are arranged in a square, each pointing toward the center.
+    """
     default_cameras = [
-        CameraCalibration(0, (0, 0, 2), (0, 0, 0), 800, (640, 360)),
-        CameraCalibration(1, (5, 0, 2), (0, 0, np.pi/2), 800, (640, 360)),
-        CameraCalibration(2, (0, 5, 2), (0, 0, np.pi), 800, (640, 360)),
-        CameraCalibration(3, (-5, 0, 2), (0, 0, -np.pi/2), 800, (640, 360))
+        CameraCalibration(0, (0, 0, 2), (0, 0, 0), 800, (640, 360)),                    # north-facing
+        CameraCalibration(1, (5, 0, 2), (0, 0, 3 * np.pi / 2), 800, (640, 360)),        # west-facing (toward center)
+        CameraCalibration(2, (0, 5, 2), (0, 0, np.pi), 800, (640, 360)),                 # south-facing (toward center)
+        CameraCalibration(3, (-5, 0, 2), (0, 0, np.pi / 2), 800, (640, 360)),            # east-facing (toward center)
     ]
     for calib in default_cameras:
         self.coordinate_transform.add_camera_calibration(calib)
@@ -528,12 +602,23 @@ async def _wm_process_camera_tracks(self, tracking_result: TrackingResult, curre
             continue
 
         track_key = (camera_id, track.track_id)
-        
+
+        # ── Depth estimation from bounding box height ──────────────
+        # depth ≈ (person_height_m × focal_length) / bbox_height_px
+        # Falls back to 3.0m if bbox is too small or calibration missing.
+        bbox_h_px = max(1.0, float(track.bbox[3] - track.bbox[1]))
+        calib = self.coordinate_transform.camera_calibrations.get(camera_id)
+        if calib is not None and bbox_h_px > 20:
+            estimated_depth = (PERSON_HEIGHT_M * calib.focal_length) / bbox_h_px
+            estimated_depth = max(0.5, min(estimated_depth, 100.0))  # clamp
+        else:
+            estimated_depth = 3.0  # safe default
+
         # Convert track position to world coordinates
         world_pos = self.coordinate_transform.pixel_to_world(
-            camera_id, 
-            track.center, 
-            depth=1.0  # Assume 1 meter depth for 2D tracking
+            camera_id,
+            track.center,
+            depth=estimated_depth
         )
         
         if world_pos is None:
@@ -564,8 +649,13 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
     obj = self.world_objects[object_id]
     bbox_area = max(1.0, (track.bbox[2] - track.bbox[0]) * (track.bbox[3] - track.bbox[1]))
 
-    # Get sensor trust for this camera
+    # Get sensor trust for this camera, scaled by GPS accuracy if available
     cam_trust = self.sensor_trust[track.camera_id]
+    calib = self.coordinate_transform.camera_calibrations.get(track.camera_id)
+    if calib is not None and calib.gps_accuracy > 0:
+        # Tight GPS (≤5m) → full trust multiplier; sloppy (50m) → 0.1× multiplier
+        gps_quality = min(1.0, 5.0 / max(calib.gps_accuracy, 0.1))
+        cam_trust = cam_trust * max(0.1, gps_quality)
 
     # Use Kalman filter when available to smooth and update state
     if object_id in self.kalman_filters:
@@ -663,6 +753,11 @@ async def _wm_update_existing_object(self, object_id: int, track, world_pos: Tup
         self.cross_camera_homography.add_correspondence(
             other_cam, this_cam, other_foot, this_foot
         )
+        # Mark current camera positions as homography-learn anchors
+        for cid in (this_cam, other_cam):
+            cc = self.coordinate_transform.camera_calibrations.get(cid)
+            if cc is not None and cc.position_at_h_learn is None:
+                cc.position_at_h_learn = cc.position
 
     # Store in history
     self.object_history[object_id].append({

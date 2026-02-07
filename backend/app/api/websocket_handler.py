@@ -506,7 +506,7 @@ class WebSocketManager:
     
     def _handle_sensor_data(self, camera_id: int, data: dict):
         """Process GPS + IMU sensor data from a mobile camera.
-        
+
         Expected format:
         {
             "type": "sensor_data",
@@ -517,45 +517,95 @@ class WebSocketManager:
         """
         try:
             import math
+            import time as _time
             from app.core.world_model import CameraCalibration
-            
+
             gps = data.get("gps")
             orientation = data.get("orientation")
-            
+
             if gps and self.world_model:
                 lat = gps.get("latitude", 0)
                 lng = gps.get("longitude", 0)
                 alt = gps.get("altitude", 0) or 0
-                
-                # First GPS fix becomes the reference origin
+                accuracy = gps.get("accuracy", 10.0) or 10.0
+
+                # ── GPS reference origin ──────────────────────────────
+                # Use config values if set, otherwise first fix becomes origin
                 if not hasattr(self.world_model, '_gps_reference'):
-                    self.world_model._gps_reference = (lat, lng)
-                    print(f"📍 GPS reference set: {lat:.6f}, {lng:.6f}")
-                
+                    ref_lat = settings.gps_reference_lat
+                    ref_lng = settings.gps_reference_lng
+                    if ref_lat is None or ref_lng is None:
+                        ref_lat, ref_lng = lat, lng
+                    self.world_model._gps_reference = (ref_lat, ref_lng)
+                    print(f"📍 GPS reference set: {ref_lat:.6f}, {ref_lng:.6f}")
+
                 ref_lat, ref_lng = self.world_model._gps_reference
-                
-                # Equirectangular projection to local meters
+
+                # Equirectangular projection to local metres
                 meters_per_deg_lat = 111320.0
                 meters_per_deg_lng = 111320.0 * math.cos(math.radians(ref_lat))
                 world_x = (lng - ref_lng) * meters_per_deg_lng
                 world_y = (lat - ref_lat) * meters_per_deg_lat
                 world_z = max(alt, 1.5)
-                
+
                 # Derive rotation from device orientation
+                # DeviceOrientation: alpha=compass heading, beta=tilt (90=horizontal), gamma=roll
                 yaw = math.radians(orientation.get("alpha", 0)) if orientation else 0.0
-                pitch = math.radians(orientation.get("beta", 0)) if orientation else 0.0
+                # beta=90 means phone held horizontally (normal camera position) → pitch=0
+                beta_deg = orientation.get("beta", 90) if orientation else 90.0
+                pitch = math.radians(beta_deg - 90.0)
                 roll = math.radians(orientation.get("gamma", 0)) if orientation else 0.0
-                
-                # Update camera calibration with GPS-anchored pose
+
+                # Compute image center from actual mobile frame dimensions
+                fw = float(settings.mobile_camera_max_width)
+                fh = fw * 0.75  # typical 4:3 mobile aspect
+                img_cx, img_cy = fw / 2.0, fh / 2.0
+
+                # Estimate focal length from ~60° horizontal FOV
+                fov_h_rad = math.radians(60.0)
+                focal = (fw / 2.0) / math.tan(fov_h_rad / 2.0)
+
+                new_pos = (world_x, world_y, world_z)
+
+                # ── Auto-invalidate homography on camera movement ────
+                old_calib = self.world_model.coordinate_transform.camera_calibrations.get(camera_id)
+                if old_calib is not None and old_calib.position_at_h_learn is not None:
+                    old_p = old_calib.position_at_h_learn
+                    dist_moved = math.sqrt(
+                        (new_pos[0] - old_p[0])**2 +
+                        (new_pos[1] - old_p[1])**2 +
+                        (new_pos[2] - old_p[2])**2
+                    )
+                    if dist_moved > settings.homography_movement_threshold:
+                        # Camera moved significantly — flush learned homographies
+                        for other_cam in list(self.world_model.coordinate_transform.camera_calibrations.keys()):
+                            if other_cam != camera_id:
+                                self.world_model.cross_camera_homography.invalidate(camera_id, other_cam)
+                        # Reset anchor so next H learns at current position
+                        # (position_at_h_learn set to None → re-anchored on next H learn)
+
+                now = _time.time()
                 calib = CameraCalibration(
                     camera_id=camera_id,
-                    position=(world_x, world_y, world_z),
+                    position=new_pos,
                     rotation=(roll, pitch, yaw),
-                    focal_length=800,
-                    image_center=(320, 240),
+                    focal_length=focal,
+                    image_center=(img_cx, img_cy),
+                    gps_accuracy=accuracy,
+                    last_update=now,
+                    position_at_h_learn=(
+                        old_calib.position_at_h_learn if old_calib else None
+                    ),
                 )
                 self.world_model.coordinate_transform.add_camera_calibration(calib)
-        
+
+                # ── Update VirtualCamera with live position ──────────
+                vcam = self.camera_manager.cameras.get(camera_id)
+                if vcam and hasattr(vcam, 'gps_position'):
+                    vcam.gps_position = new_pos
+                    vcam.heading = math.degrees(yaw)
+                    vcam.gps_accuracy = accuracy
+
         except Exception as e:
             print(f"❌ Sensor data error for camera {camera_id}: {e}")
     

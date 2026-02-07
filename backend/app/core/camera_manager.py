@@ -262,6 +262,10 @@ class VirtualCamera:
         self._fps_start_time = time.time()
         # Keep raw JPEG bytes for pass-through to viewers (skip re-encoding)
         self._last_jpeg_bytes: Optional[bytes] = None
+        # Live GPS/IMU — updated by websocket_handler._handle_sensor_data
+        self.gps_position: Optional[tuple] = None   # (x, y, z) in local metres
+        self.heading: float = 0.0                     # compass heading in degrees
+        self.gps_accuracy: float = 999.0              # GPS accuracy in metres
     
     def inject_frame(self, jpeg_bytes: bytes) -> bool:
         """Inject a JPEG frame received from the mobile client.
