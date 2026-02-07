@@ -194,7 +194,7 @@ cd overwatch
 mkdir certs
 openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
   -days 365 -nodes -subj "/CN=overwatch" \
-  -addext "subjectAltName=IP:192.168.1.4,IP:127.0.0.1,DNS:localhost"
+  -addext "subjectAltName=IP:192.168.1.8,IP:127.0.0.1,DNS:localhost"
 ```
 
 ### 3. Backend Setup
@@ -227,7 +227,7 @@ npm install
 Create `frontend/.env`:
 
 ```env
-REACT_APP_BACKEND_HOST=192.168.1.4
+REACT_APP_BACKEND_HOST=192.168.1.8
 REACT_APP_BACKEND_PORT=8000
 ```
 
@@ -539,7 +539,7 @@ python scripts/check_logs.py
 python scripts/check_status.py
 
 # Or via SSH
-ssh mandar@192.168.1.4 'tail -50 /tmp/overwatch.log'
+ssh mandar@192.168.1.8 'tail -50 /tmp/overwatch.log'
 ```
 </details>
 <details>

@@ -98,7 +98,7 @@ class CameraCapture:
             # Define IP camera URLs for mobile devices
             # Replace these IPs with your actual mobile device IPs
             ip_cameras = {
-                0: "http://192.168.1.4:8080/video",  # Mobile 1 - Video stream URL
+                0: "http://192.168.1.8:8080/video",  # Mobile 1 - Video stream URL
                 1: "http://192.168.1.101:8080/video",  # Mobile 2 - Replace with your IP
                 2: "http://192.168.1.102:8080/video",  # Mobile 3 - Replace with your IP  
                 3: "http://192.168.1.103:8080/video"   # Mobile 4 - Replace with your IP
