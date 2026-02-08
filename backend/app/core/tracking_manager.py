@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict, deque
 
 try:
-    from deep_sort_realtime import DeepSort
+    from deep_sort_realtime.deepsort_tracker import DeepSort
 except ImportError:
     print("⚠️ DeepSORT not available, using simple tracking")
     DeepSort = None

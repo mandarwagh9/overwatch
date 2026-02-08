@@ -67,6 +67,15 @@ class YOLODetector:
                 self.is_initialized = True
                 self.class_names = {0: 'person'}
                 return
+
+            # PyTorch 2.6 uses weights_only=True by default; allowlist YOLO class
+            try:
+                import torch
+                from ultralytics.nn.tasks import DetectionModel
+                torch.serialization.add_safe_globals([DetectionModel])
+            except Exception:
+                # If allowlisting fails, fall back and let torch raise a clear error
+                pass
             
             # Resolve model path from config
             model_path = settings.model_path
