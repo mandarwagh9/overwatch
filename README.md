@@ -301,13 +301,13 @@ nohup python3 main.py > /tmp/overwatch.log 2>&1 &
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/` | Health check — returns version, status, capabilities |
-| `GET` | `/status` | System status (cameras, clients, model info) |
+| `GET` | `/` | Health check — returns version, status |
+| `GET` | `/health` | Detailed health status |
+| `GET` | `/status` | System status (cameras, clients, detection engine, pipeline metrics) |
 | `GET` | `/cameras` | Active camera list |
 | `GET` | `/mobile` | Standalone mobile camera HTML page |
-| `POST` | `/camera/{id}/start` | Start a physical camera |
-| `POST` | `/camera/{id}/stop` | Stop a camera |
-| `POST` | `/api/token` | Issue JWT authentication token |
+| `POST` | `/cameras/{camera_id}/start` | Start a physical camera |
+| `POST` | `/cameras/{camera_id}/stop` | Stop a camera |
 
 #### Health Check Response
 
@@ -405,26 +405,33 @@ Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }
 | `DEVICE` | `auto` | Compute device — `auto`, `cpu`, `cuda:0` |
 | `HALF_PRECISION` | `false` | FP16 inference (set `true` on Jetson with `.engine`) |
 | `DETECTION_CLASSES` | `[0]` | COCO class IDs to detect (`0` = person) |
+| `CONFIDENCE_THRESHOLD` | `0.5` | Detection confidence threshold |
+| `IOU_THRESHOLD` | `0.45` | NMS IOU threshold |
+| `TARGET_FPS` | `24` | Processing framerate target |
+| `MAX_CAMERAS` | `4` | Maximum concurrent camera streams |
+| `TRACKING_MAX_AGE` | `30` | Max frames to keep lost tracks |
+| `TRACKING_MIN_HITS` | `3` | Min hits to confirm track |
+| `TRACKING_IOU_THRESHOLD` | `0.25` | IoU threshold for tracking |
+| `MOBILE_CAMERA_FPS` | `15` | Mobile camera target FPS |
+| `MOBILE_CAMERA_MAX_WIDTH` | `640` | Mobile camera max width |
 | `SSL_ENABLED` | `true` | Enable HTTPS/WSS |
 | `SSL_CERTFILE` | `certs/cert.pem` | SSL certificate path |
 | `SSL_KEYFILE` | `certs/key.pem` | SSL private key path |
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8000` | Bind port |
-| `MAX_CAMERAS` | `4` | Maximum concurrent camera streams |
-| `TARGET_FPS` | `24` | Processing framerate target |
-| `JWT_SECRET` | `overwatch-secret` | JWT signing secret |
-| `JWT_ALGORITHM` | `HS256` | JWT algorithm |
-| `JWT_EXPIRE_MINUTES` | `60` | Token expiry |
-| `AUTH_ENABLED` | `false` | Enforce JWT on WebSocket connections |
-| `TRUST_DECAY_RATE` | `0.01` | Per-tick trust decay for sensors |
-| `TRUST_MIN` | `0.1` | Minimum sensor trust floor |
 
 ### Frontend `.env`
 
-| Variable | Description |
-|---|---|
-| `REACT_APP_BACKEND_HOST` | Jetson/backend IP address |
-| `REACT_APP_BACKEND_PORT` | Backend port (default `8000`) |
+| Variable | Default | Description |
+|---|---|---|
+| `REACT_APP_BACKEND_HOST` | `window.location.hostname` | Backend IP address |
+| `REACT_APP_BACKEND_PORT` | `8000` | Backend port |
+| `REACT_APP_BACKEND_PROTOCOL` | `wss` (https) / `ws` (http) | WebSocket protocol |
+| `REACT_APP_MAX_CAMERAS` | `4` | Maximum cameras to display |
+| `REACT_APP_CAMERA_INACTIVITY_TIMEOUT` | `3000` | ms before marking camera offline |
+| `REACT_APP_MOBILE_TARGET_FPS` | `15` | Mobile streaming FPS |
+| `REACT_APP_MOBILE_JPEG_QUALITY` | `0.5` | Mobile JPEG quality (0-1) |
+| `REACT_APP_MOBILE_MAX_WIDTH` | `640` | Mobile frame width |
 
 ---
 
@@ -534,21 +541,8 @@ cd /home/mandar/overwatch/backend && nohup python3 main.py > /tmp/overwatch.log 
 <summary><strong>Checking Jetson logs</strong></summary>
 
 ```bash
-# From your development machine
+# Quick restart
 python scripts/restart_jetson.py
-
-# Or via SSH
-ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
-```
-</details>
-
-<details>
-<summary><strong>Checking Jetson logs</strong></summary>
-
-```bash
-# From your development machine
-python scripts/check_logs.py
-python scripts/check_status.py
 
 # Or via SSH
 ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
@@ -572,7 +566,7 @@ Path C world projection uses hardcoded camera positions. If ghosts land far from
 1. Edit `_simple_world_to_pixel()` in `world_model.py`
 2. Set `camera_positions` dict to match your physical camera locations (x, y, z in meters)
 3. Adjust `fov_deg` (default 60°) to match your camera lens
-4. Redeploy: `python scripts/deploy_v2.py && python scripts/force_restart.py`
+4. Redeploy: `python scripts/deploy_jetson.py && python scripts/restart_jetson.py`
 </details>
 
 <details>
@@ -709,7 +703,7 @@ camera_positions = {
 ```
 
 These positions assume a rectangular room setup. If your cameras are arranged differently:
-1. Edit `_simple_world_to_pixel()` in [world_model.py](backend/app/core/world_model.py) with actual camera positions
+1. Edit `_simple_world_to_pixel()` in [world_model_adapter.py](backend/app/infrastructure/world_model_adapter.py) with actual camera positions
 2. Adjust the FOV constant (currently 60°) to match your cameras
 3. Path C accuracy improves dramatically with correct extrinsics — ghosts land within ~50px of true position vs ~200px with wrong positions
 
