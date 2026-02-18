@@ -1,78 +1,96 @@
 /**
- * MobileCamera — standalone page for mobile users to stream their camera
- * 
- * Usage: User opens https://<server-ip>:3000/mobile on their phone,
- *        taps "Start Streaming", and their camera feed is sent to the backend.
+ * Mobile Camera Page
+ * Standalone page for mobile users to stream their camera
  */
 
-import React, { useRef, useState, useCallback, useEffect } from 'react';
-import { CameraStreamService } from '../services/cameraStream';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
+import cameraStreamAdapter, { StreamState, StreamEvents } from '../infrastructure/cameraStreamAdapter';
 import './MobileCamera.css';
 
-const MobileCamera = () => {
+function MobileCamera() {
   const videoRef = useRef(null);
-  const streamServiceRef = useRef(null);
-
-  const [status, setStatus] = useState('idle');       // idle | initializing | camera_ready | streaming | stopped | disconnected
+  const [streamState, setStreamState] = useState(StreamState.IDLE);
   const [cameraId, setCameraId] = useState(null);
+  const [stats, setStats] = useState({
+    framesSent: 0,
+    bytesSent: 0,
+    mbSent: '0.0',
+    fps: 0,
+    elapsed: 0,
+    facingMode: 'environment'
+  });
   const [error, setError] = useState(null);
-  const [stats, setStats] = useState(null);
-  const [facingMode, setFacingMode] = useState('environment');
 
-  // Create the stream service once
+  // Update stream state
   useEffect(() => {
-    streamServiceRef.current = new CameraStreamService();
-    const svc = streamServiceRef.current;
+    const handleStateChange = (state) => {
+      setStreamState(state);
+    };
 
-    svc.onStatusChange = (newStatus) => setStatus(newStatus);
-    svc.onError = (msg) => setError(msg);
-    svc.onStatsUpdate = (newStats) => setStats(newStats);
+    const handleCameraRegistered = (id) => {
+      setCameraId(id);
+    };
+
+    const handleStatsUpdate = (newStats) => {
+      setStats(newStats);
+    };
+
+    const handleError = (message) => {
+      setError(message);
+    };
+
+    cameraStreamAdapter.on(StreamEvents.STATE_CHANGE, handleStateChange);
+    cameraStreamAdapter.on(StreamEvents.CAMERA_REGISTERED, handleCameraRegistered);
+    cameraStreamAdapter.on(StreamEvents.STATS_UPDATE, handleStatsUpdate);
+    cameraStreamAdapter.on(StreamEvents.ERROR, handleError);
 
     return () => {
-      // Cleanup on unmount
-      if (streamServiceRef.current) {
-        streamServiceRef.current.stop();
-      }
+      cameraStreamAdapter.off(StreamEvents.STATE_CHANGE, handleStateChange);
+      cameraStreamAdapter.off(StreamEvents.CAMERA_REGISTERED, handleCameraRegistered);
+      cameraStreamAdapter.off(StreamEvents.STATS_UPDATE, handleStatsUpdate);
+      cameraStreamAdapter.off(StreamEvents.ERROR, handleError);
     };
   }, []);
 
+  // Start streaming
   const handleStart = useCallback(async () => {
     setError(null);
+    
     try {
-      const id = await streamServiceRef.current.start(videoRef.current, {
-        facingMode,
-        targetFps: 15,
-        jpegQuality: 0.5,
-        maxWidth: 640
-      });
-      setCameraId(id);
+      await cameraStreamAdapter.start(videoRef.current);
     } catch (err) {
       setError(err.message);
-      setStatus('idle');
     }
-  }, [facingMode]);
+  }, []);
 
+  // Stop streaming
   const handleStop = useCallback(() => {
-    if (streamServiceRef.current) {
-      streamServiceRef.current.stop();
-    }
+    cameraStreamAdapter.stop();
     setCameraId(null);
-    setStats(null);
-    setStatus('stopped');
   }, []);
 
+  // Switch camera
   const handleSwitchCamera = useCallback(async () => {
-    if (streamServiceRef.current) {
-      await streamServiceRef.current.switchCamera();
-      setFacingMode(streamServiceRef.current.facingMode);
+    try {
+      await cameraStreamAdapter.switchCamera();
+    } catch (err) {
+      setError(err.message);
     }
   }, []);
 
-  const isActive = status === 'streaming' || status === 'camera_ready' || status === 'initializing';
+  // Toggle start/stop
+  const handleToggle = useCallback(() => {
+    if (cameraStreamAdapter.isStreaming) {
+      handleStop();
+    } else {
+      handleStart();
+    }
+  }, [handleStart, handleStop]);
+
+  const isStreaming = cameraStreamAdapter.isStreaming;
 
   return (
     <div className="mobile-camera-page">
-      {/* Header */}
       <header className="mobile-header">
         <h1>📱 OVERWATCH</h1>
         <span className="mobile-subtitle">Mobile Camera</span>
@@ -94,10 +112,10 @@ const MobileCamera = () => {
           autoPlay
           playsInline
           muted
-          style={{ display: status !== 'idle' && status !== 'stopped' ? 'block' : 'none' }}
+          style={{ display: isStreaming ? 'block' : 'none' }}
         />
         
-        {(status === 'idle' || status === 'stopped') && (
+        {!isStreaming && (
           <div className="mobile-placeholder">
             <div className="placeholder-icon">📷</div>
             <p>Tap "Start Streaming" to begin</p>
@@ -106,14 +124,14 @@ const MobileCamera = () => {
         )}
 
         {/* Status overlay */}
-        {status === 'streaming' && (
+        {streamState === StreamState.STREAMING && (
           <div className="streaming-indicator">
             <span className="recording-dot"></span>
             LIVE — Camera {cameraId}
           </div>
         )}
 
-        {status === 'initializing' && (
+        {streamState === StreamState.CONNECTING && (
           <div className="streaming-indicator initializing">
             ⏳ Connecting...
           </div>
@@ -121,7 +139,7 @@ const MobileCamera = () => {
       </div>
 
       {/* Stats */}
-      {stats && status === 'streaming' && (
+      {isStreaming && (
         <div className="mobile-stats">
           <div className="stat-item">
             <span className="stat-value">{stats.fps}</span>
@@ -144,7 +162,7 @@ const MobileCamera = () => {
 
       {/* Controls */}
       <div className="mobile-controls">
-        {!isActive ? (
+        {!isStreaming ? (
           <button onClick={handleStart} className="mobile-btn start-btn">
             ▶️ Start Streaming
           </button>
@@ -157,16 +175,16 @@ const MobileCamera = () => {
         <button
           onClick={handleSwitchCamera}
           className="mobile-btn switch-btn"
-          disabled={status === 'idle' || status === 'stopped'}
+          disabled={!isStreaming}
         >
-          🔄 {facingMode === 'environment' ? 'Front' : 'Rear'} Camera
+          🔄 {stats.facingMode === 'environment' ? 'Front' : 'Rear'} Camera
         </button>
       </div>
 
       {/* Connection Info */}
       <div className="mobile-info">
         <p>
-          Status: <strong>{status}</strong>
+          Status: <strong>{streamState}</strong>
           {cameraId !== null && ` • Slot: ${cameraId}`}
         </p>
         <p className="mobile-info-hint">
@@ -178,6 +196,6 @@ const MobileCamera = () => {
       </div>
     </div>
   );
-};
+}
 
 export default MobileCamera;

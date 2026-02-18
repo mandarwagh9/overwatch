@@ -1,0 +1,21 @@
+/* Connection Status styles */
+
+.connection-status {
+  padding: 0.4rem 1rem;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+.connection-status.connected {
+  background: rgba(0, 200, 220, 0.2);
+  color: #00c8dc;
+  border: 1px solid rgba(0, 200, 220, 0.4);
+}
+
+.connection-status.disconnected {
+  background: rgba(255, 68, 68, 0.2);
+  color: #ff4444;
+  border: 1px solid rgba(255, 68, 68, 0.4);
+}

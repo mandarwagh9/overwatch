@@ -1,24 +1,26 @@
 {
   "name": "overwatch-frontend",
-  "version": "1.0.0",
-  "description": "Overwatch situational awareness frontend",
-  "main": "src/index.js",
+  "version": "2.0.0",
+  "description": "Overwatch multi-camera perception frontend",
+  "private": true,
+  "dependencies": {
+    "@msgpack/msgpack": "^3.0.0-beta2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^7.13.0",
+    "react-scripts": "5.0.1"
+  },
   "scripts": {
-    "start": "set HTTPS=true&&set SSL_CRT_FILE=../certs/cert.pem&&set SSL_KEY_FILE=../certs/key.pem&&react-scripts start",
-    "start:http": "react-scripts start",
+    "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
-  "dependencies": {
-    "@msgpack/msgpack": "^3.0.0-beta2",
-    "@react-three/drei": "^9.88.13",
-    "@react-three/fiber": "^8.15.11",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^7.13.0",
-    "react-scripts": "5.0.1",
-    "three": "^0.158.0"
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
   },
   "browserslist": {
     "production": [
@@ -32,5 +34,5 @@
       "last 1 safari version"
     ]
   },
-  "proxy": "https://192.168.1.8:8000"
+  "proxy": "http://localhost:8000"
 }

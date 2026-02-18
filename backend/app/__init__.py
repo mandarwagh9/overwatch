@@ -1,7 +1,10 @@
 """
-Overwatch Backend Package Initialization
+Overwatch Backend Application Package
+Clean Architecture Implementation
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __title__ = "Overwatch"
-__description__ = "Connected situational awareness system with multi-camera tracking"
+__description__ = "Multi-camera perception and tracking system"
+
+__all__ = ["__version__", "__title__", "__description__"]

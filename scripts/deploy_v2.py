@@ -1,10 +1,10 @@
 """Deploy Overwatch v2.0 (multi-agent perception) to Jetson Orin Nano."""
 import paramiko, time, os
 
-JETSON_IP = '192.168.1.8'
+JETSON_IP = '192.168.1.12'
 JETSON_USER = 'mandar'
 JETSON_PASS = 'mandar'
-REMOTE_BASE = '/home/mandar/OVERWATCH/backend'
+REMOTE_BASE = '/home/mandar/overwatch-backend'
 
 # All files to upload (local -> remote)
 FILES = {
@@ -14,9 +14,13 @@ FILES = {
     r"backend\app\core\detection_engine.py": "app/core/detection_engine.py",
     r"backend\app\core\tracking_manager.py": "app/core/tracking_manager.py",
     r"backend\app\core\world_model.py": "app/core/world_model.py",
+    r"backend\app\core\camera_manager.py": "app/core/camera_manager.py",
     r"backend\app\api\websocket_handler.py": "app/api/websocket_handler.py",
     r"backend\main.py": "main.py",
     r"backend\app\config.py": "app/config.py",
+    r"backend\app\__init__.py": "app/__init__.py",
+    r"backend\app\core\__init__.py": "app/core/__init__.py",
+    r"backend\app\api\__init__.py": "app/api/__init__.py",
     r"backend\requirements.txt": "requirements.txt",
 }
 

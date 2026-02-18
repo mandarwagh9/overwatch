@@ -1,12 +1,38 @@
 /**
- * Camera Stream Service
- * 
- * Captures video from the device camera using getUserMedia,
- * encodes frames as JPEG via an offscreen canvas, and sends
- * them as binary WebSocket messages to the Overwatch backend.
+ * Camera stream adapter for mobile camera streaming.
+ * Handles video capture, encoding, and WebSocket transmission.
  */
 
-export class CameraStreamService {
+import { getCameraWebSocketUrl, getConfig } from '../config';
+
+/**
+ * Camera stream states
+ */
+export const StreamState = {
+  IDLE: 'idle',
+  INITIALIZING: 'initializing',
+  CAMERA_READY: 'camera_ready',
+  CONNECTING: 'connecting',
+  STREAMING: 'streaming',
+  DISCONNECTED: 'disconnected',
+  ERROR: 'error',
+  STOPPED: 'stopped'
+};
+
+/**
+ * Camera stream events
+ */
+export const StreamEvents = {
+  STATE_CHANGE: 'stateChange',
+  ERROR: 'error',
+  STATS_UPDATE: 'statsUpdate',
+  CAMERA_REGISTERED: 'cameraRegistered'
+};
+
+/**
+ * Camera stream adapter
+ */
+class CameraStreamAdapter {
   constructor() {
     this.socket = null;
     this.stream = null;
@@ -14,15 +40,19 @@ export class CameraStreamService {
     this.canvas = null;
     this.ctx = null;
     this.isStreaming = false;
-    this.captureIntervalId = null;
     this.cameraId = null;
-
-    // Configurable settings (may be overridden by server response)
-    this.targetFps = 15;
-    this.jpegQuality = 0.5;
-    this.maxWidth = 640;
-    this.facingMode = 'environment'; // rear camera by default
-
+    this.facingMode = 'environment';
+    
+    // Configuration
+    this.targetFps = getConfig('mobile.targetFps', 15);
+    this.jpegQuality = getConfig('mobile.jpegQuality', 0.5);
+    this.maxWidth = getConfig('mobile.maxWidth', 640);
+    this.sensorInterval = getConfig('mobile.sensorInterval', 500);
+    
+    // State
+    this.currentState = StreamState.IDLE;
+    this.listeners = new Map();
+    
     // Stats
     this.stats = {
       framesSent: 0,
@@ -32,36 +62,77 @@ export class CameraStreamService {
       lastFpsUpdate: 0,
       fpsCounter: 0
     };
-
-    // Sensor fusion: GPS + IMU
+    
+    // Sensor data
     this._geoWatchId = null;
     this._lastGps = null;
     this._lastOrientation = null;
     this._sensorIntervalId = null;
-
-    // Callbacks
-    this.onStatusChange = null;
-    this.onError = null;
-    this.onStatsUpdate = null;
+    this._orientationHandler = null;
+    this._captureIntervalId = null;
+    this._keepAliveIntervalId = null;
   }
 
   /**
-   * Get the WebSocket URL for the camera endpoint.
-   * Automatically determines ws:// vs wss:// based on page protocol.
+   * Add event listener
+   * @param {string} event
+   * @param {Function} callback
    */
-  _getWsUrl() {
-    // Use env var for backend host, fallback to same-origin
-    const host = process.env.REACT_APP_BACKEND_HOST || window.location.hostname || 'localhost';
-    const port = process.env.REACT_APP_BACKEND_PORT || '8000';
-    return `wss://${host}:${port}/ws/camera`;
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, []);
+    }
+    this.listeners.get(event).push(callback);
   }
 
   /**
-   * Start capturing and streaming from the device camera.
-   * 
-   * @param {HTMLVideoElement} videoElement - The <video> element for local preview
-   * @param {Object} options - Optional overrides: { facingMode, targetFps, jpegQuality, maxWidth }
-   * @returns {Promise<number>} The assigned camera ID
+   * Remove event listener
+   * @param {string} event
+   * @param {Function} callback
+   */
+  off(event, callback) {
+    if (this.listeners.has(event)) {
+      const callbacks = this.listeners.get(event);
+      const index = callbacks.indexOf(callback);
+      if (index !== -1) {
+        callbacks.splice(index, 1);
+      }
+    }
+  }
+
+  /**
+   * Emit event
+   * @param {string} event
+   * @param {any} data
+   */
+  emit(event, data) {
+    if (this.listeners.has(event)) {
+      this.listeners.get(event).forEach(callback => {
+        try {
+          callback(data);
+        } catch (error) {
+          console.error(`[CameraStream] Error in ${event} listener:`, error);
+        }
+      });
+    }
+  }
+
+  /**
+   * Set state
+   * @param {string} state
+   */
+  setState(state) {
+    if (this.currentState !== state) {
+      this.currentState = state;
+      this.emit(StreamEvents.STATE_CHANGE, state);
+    }
+  }
+
+  /**
+   * Start streaming
+   * @param {HTMLVideoElement} videoElement
+   * @param {Object} [options]
+   * @returns {Promise<number>} Camera ID
    */
   async start(videoElement, options = {}) {
     if (this.isStreaming) {
@@ -75,9 +146,39 @@ export class CameraStreamService {
     if (options.maxWidth) this.maxWidth = options.maxWidth;
 
     this.videoElement = videoElement;
-    this._emitStatus('initializing');
+    this.setState(StreamState.INITIALIZING);
 
-    // 1. Get camera access
+    try {
+      // Get camera access
+      await this._initCamera();
+      this.setState(StreamState.CAMERA_READY);
+
+      // Connect WebSocket
+      await this._connectWebSocket();
+
+      // Start streaming
+      this.isStreaming = true;
+      this.stats.startTime = Date.now();
+      this.stats.lastFpsUpdate = Date.now();
+      this._startCaptureLoop();
+      this._startSensorCapture();
+      this._startKeepAlive();
+      this.setState(StreamState.STREAMING);
+
+      return this.cameraId;
+
+    } catch (error) {
+      this.setState(StreamState.ERROR);
+      this.emit(StreamEvents.ERROR, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Initialize camera
+   * @private
+   */
+  async _initCamera() {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -87,46 +188,27 @@ export class CameraStreamService {
         },
         audio: false
       });
-    } catch (err) {
-      this._emitError(`Camera access denied: ${err.message}`);
-      throw err;
+
+      this.videoElement.srcObject = this.stream;
+      await this.videoElement.play();
+
+      // Initialize canvas for frame capture
+      this.canvas = document.createElement('canvas');
+      this.ctx = this.canvas.getContext('2d');
+
+    } catch (error) {
+      throw new Error(`Camera access denied: ${error.message}`);
     }
-
-    // Attach stream to video element for local preview
-    this.videoElement.srcObject = this.stream;
-    await this.videoElement.play();
-    this._emitStatus('camera_ready');
-
-    // 2. Set up offscreen canvas for frame capture
-    this.canvas = document.createElement('canvas');
-    this.ctx = this.canvas.getContext('2d');
-
-    // 3. Connect WebSocket to /ws/camera
-    try {
-      await this._connectWebSocket();
-    } catch (err) {
-      this.stop();
-      throw err;
-    }
-
-    // 4. Start the capture loop
-    this.isStreaming = true;
-    this.stats.startTime = Date.now();
-    this.stats.lastFpsUpdate = Date.now();
-    this._startCaptureLoop();
-    this._startSensorCapture();
-    this._emitStatus('streaming');
-
-    return this.cameraId;
   }
 
   /**
-   * Connect to the backend WebSocket and register as a camera source.
+   * Connect to WebSocket
+   * @private
    */
   _connectWebSocket() {
     return new Promise((resolve, reject) => {
-      const url = this._getWsUrl();
-      console.log(`📱 Connecting to ${url}`);
+      const url = getCameraWebSocketUrl();
+      console.log(`[CameraStream] Connecting to ${url}`);
 
       this.socket = new WebSocket(url);
       this.socket.binaryType = 'arraybuffer';
@@ -137,14 +219,14 @@ export class CameraStreamService {
       }, 10000);
 
       this.socket.onopen = () => {
-        clearTimeout(timeout);
-        console.log('📱 WebSocket connected, sending registration...');
+        console.log('[CameraStream] WebSocket connected');
+        this.setState(StreamState.CONNECTING);
 
-        // Send registration message
+        // Send registration
         this.socket.send(JSON.stringify({
           type: 'register',
           role: 'camera_source',
-          camera_id: null  // auto-assign
+          camera_id: null
         }));
       };
 
@@ -153,14 +235,23 @@ export class CameraStreamService {
           const msg = JSON.parse(event.data);
 
           if (msg.type === 'registered') {
+            clearTimeout(timeout);
             this.cameraId = msg.camera_id;
+            
             // Apply server-suggested settings
             if (msg.target_fps) this.targetFps = msg.target_fps;
             if (msg.max_width) this.maxWidth = msg.max_width;
-            console.log(`📱 Registered as camera ${this.cameraId} (${this.targetFps} FPS)`);
+            
+            console.log(`[CameraStream] Registered as camera ${this.cameraId}`);
+            this.emit(StreamEvents.CAMERA_REGISTERED, this.cameraId);
             resolve(this.cameraId);
+
           } else if (msg.type === 'error') {
+            clearTimeout(timeout);
             reject(new Error(msg.message || 'Registration failed'));
+          } else if (msg.type === 'pong') {
+            // Server responded to ping, connection is alive
+            console.log('[CameraStream] Received pong from server');
           }
         } catch (e) {
           // Ignore non-JSON messages after registration
@@ -169,15 +260,14 @@ export class CameraStreamService {
 
       this.socket.onerror = (err) => {
         clearTimeout(timeout);
-        console.error('📱 WebSocket error:', err);
-        this._emitError('WebSocket connection failed');
+        console.error('[CameraStream] WebSocket error:', err);
         reject(new Error('WebSocket connection failed'));
       };
 
-      this.socket.onclose = () => {
-        console.log('📱 WebSocket closed');
+      this.socket.onclose = (event) => {
+        console.log(`[CameraStream] WebSocket closed: code=${event.code}, reason=${event.reason}`);
         if (this.isStreaming) {
-          this._emitStatus('disconnected');
+          this.setState(StreamState.DISCONNECTED);
           this.stop();
         }
       };
@@ -185,12 +275,13 @@ export class CameraStreamService {
   }
 
   /**
-   * Start the frame capture loop at the target FPS.
+   * Start frame capture loop
+   * @private
    */
   _startCaptureLoop() {
     const interval = 1000 / this.targetFps;
 
-    this.captureIntervalId = setInterval(() => {
+    this._captureIntervalId = setInterval(() => {
       if (!this.isStreaming || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
         return;
       }
@@ -200,7 +291,8 @@ export class CameraStreamService {
   }
 
   /**
-   * Capture one frame from the video, encode as JPEG, and send over WebSocket.
+   * Capture and send frame
+   * @private
    */
   _captureAndSendFrame() {
     if (!this.videoElement || this.videoElement.readyState < 2) return;
@@ -222,7 +314,7 @@ export class CameraStreamService {
     this.canvas.height = ch;
     this.ctx.drawImage(this.videoElement, 0, 0, cw, ch);
 
-    // Encode as JPEG blob and send as binary
+    // Encode and send
     this.canvas.toBlob(
       (blob) => {
         if (!blob || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
@@ -240,10 +332,7 @@ export class CameraStreamService {
             this.stats.fps = (this.stats.fpsCounter / (now - this.stats.lastFpsUpdate)) * 1000;
             this.stats.fpsCounter = 0;
             this.stats.lastFpsUpdate = now;
-
-            if (this.onStatsUpdate) {
-              this.onStatsUpdate(this.getStats());
-            }
+            this.emit(StreamEvents.STATS_UPDATE, this.getStats());
           }
         });
       },
@@ -253,10 +342,28 @@ export class CameraStreamService {
   }
 
   /**
-   * Start capturing GPS + device orientation and sending as sensor_data messages.
+   * Start keepalive ping
+   * @private
+   */
+  _startKeepAlive() {
+    // Send ping every 20 seconds to keep connection alive
+    this._keepAliveIntervalId = setInterval(() => {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        try {
+          this.socket.send(JSON.stringify({ type: 'ping' }));
+        } catch (e) {
+          console.error('[CameraStream] Failed to send ping:', e);
+        }
+      }
+    }, 20000);
+  }
+
+  /**
+   * Start sensor capture
+   * @private
    */
   _startSensorCapture() {
-    // GPS via Geolocation API
+    // GPS
     if ('geolocation' in navigator) {
       try {
         this._geoWatchId = navigator.geolocation.watchPosition(
@@ -265,28 +372,27 @@ export class CameraStreamService {
               latitude: pos.coords.latitude,
               longitude: pos.coords.longitude,
               altitude: pos.coords.altitude,
-              accuracy: pos.coords.accuracy,
+              accuracy: pos.coords.accuracy
             };
           },
-          (err) => console.warn('GPS error:', err.message),
+          (err) => console.warn('[CameraStream] GPS error:', err.message),
           { enableHighAccuracy: true, maximumAge: 1000, timeout: 5000 }
         );
       } catch (e) {
-        console.warn('Geolocation not available:', e);
+        console.warn('[CameraStream] Geolocation not available:', e);
       }
     }
 
-    // IMU via DeviceOrientation API
+    // Device orientation
     const handleOrientation = (event) => {
       this._lastOrientation = {
-        alpha: event.alpha,  // compass heading (0-360)
-        beta: event.beta,    // front-back tilt (-180 to 180)
-        gamma: event.gamma,  // left-right tilt (-90 to 90)
+        alpha: event.alpha,
+        beta: event.beta,
+        gamma: event.gamma
       };
     };
 
     if (typeof DeviceOrientationEvent !== 'undefined') {
-      // iOS 13+ requires permission
       if (typeof DeviceOrientationEvent.requestPermission === 'function') {
         DeviceOrientationEvent.requestPermission()
           .then(state => {
@@ -301,26 +407,29 @@ export class CameraStreamService {
     }
     this._orientationHandler = handleOrientation;
 
-    // Send sensor data at 2 Hz (GPS updates are slow, no need to spam)
+    // Send sensor data periodically
     this._sensorIntervalId = setInterval(() => {
       if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
       if (!this._lastGps && !this._lastOrientation) return;
 
       const msg = {
         type: 'sensor_data',
-        timestamp: Date.now(),
+        timestamp: Date.now()
       };
       if (this._lastGps) msg.gps = this._lastGps;
       if (this._lastOrientation) msg.orientation = this._lastOrientation;
 
       try {
         this.socket.send(JSON.stringify(msg));
-      } catch (e) { /* ignore */ }
-    }, 500);
+      } catch (e) {
+        // Ignore send errors
+      }
+    }, this.sensorInterval);
   }
 
   /**
-   * Stop sensor capture and clean up listeners.
+   * Stop sensor capture
+   * @private
    */
   _stopSensorCapture() {
     if (this._geoWatchId !== null) {
@@ -340,28 +449,36 @@ export class CameraStreamService {
   }
 
   /**
-   * Stop streaming and clean up all resources.
+   * Stop streaming
    */
   stop() {
     this.isStreaming = false;
+
+    // Stop keepalive
+    if (this._keepAliveIntervalId) {
+      clearInterval(this._keepAliveIntervalId);
+      this._keepAliveIntervalId = null;
+    }
 
     // Stop sensor capture
     this._stopSensorCapture();
 
     // Stop capture loop
-    if (this.captureIntervalId) {
-      clearInterval(this.captureIntervalId);
-      this.captureIntervalId = null;
+    if (this._captureIntervalId) {
+      clearInterval(this._captureIntervalId);
+      this._captureIntervalId = null;
     }
 
-    // Send stop command and close WebSocket
+    // Close WebSocket
     if (this.socket) {
       try {
         if (this.socket.readyState === WebSocket.OPEN) {
           this.socket.send(JSON.stringify({ type: 'stop' }));
         }
         this.socket.close();
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        // Ignore
+      }
       this.socket = null;
     }
 
@@ -377,22 +494,18 @@ export class CameraStreamService {
     }
 
     this.cameraId = null;
-    this._emitStatus('stopped');
+    this.setState(StreamState.STOPPED);
   }
 
   /**
-   * Switch between front and rear cameras.
+   * Switch camera
    */
   async switchCamera() {
     this.facingMode = this.facingMode === 'environment' ? 'user' : 'environment';
 
-    if (this.isStreaming) {
-      // Stop existing stream tracks
-      if (this.stream) {
-        this.stream.getTracks().forEach(track => track.stop());
-      }
+    if (this.isStreaming && this.stream) {
+      this.stream.getTracks().forEach(track => track.stop());
 
-      // Restart with new facing mode
       try {
         this.stream = await navigator.mediaDevices.getUserMedia({
           video: {
@@ -408,13 +521,14 @@ export class CameraStreamService {
           await this.videoElement.play();
         }
       } catch (err) {
-        this._emitError(`Failed to switch camera: ${err.message}`);
+        this.emit(StreamEvents.ERROR, `Failed to switch camera: ${err.message}`);
       }
     }
   }
 
   /**
-   * Get current streaming statistics.
+   * Get stats
+   * @returns {Object}
    */
   getStats() {
     const elapsed = this.stats.startTime ? (Date.now() - this.stats.startTime) / 1000 : 0;
@@ -430,16 +544,17 @@ export class CameraStreamService {
     };
   }
 
-  // Internal helpers
-  _emitStatus(status) {
-    if (this.onStatusChange) this.onStatusChange(status);
-  }
-
-  _emitError(message) {
-    console.error(`📱 CameraStream error: ${message}`);
-    if (this.onError) this.onError(message);
+  /**
+   * Get current state
+   * @returns {string}
+   */
+  getState() {
+    return this.currentState;
   }
 }
 
-// Export singleton
-export const cameraStreamService = new CameraStreamService();
+// Singleton instance
+const cameraStreamAdapter = new CameraStreamAdapter();
+
+export { CameraStreamAdapter };
+export default cameraStreamAdapter;

@@ -1,0 +1,21 @@
+/* Error Banner styles */
+
+.error-banner {
+  background: linear-gradient(90deg, #ff4444, #cc0000);
+  color: white;
+  padding: 1rem 2rem;
+  text-align: center;
+  font-size: 0.9rem;
+  animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
