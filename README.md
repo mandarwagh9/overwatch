@@ -181,8 +181,7 @@ OVERWATCH/
 
 - **Python 3.10+** with pip
 - **Node.js 18+** with npm
-- **OpenSSL** (for certificate generation)
-- NVIDIA Jetson Orin Nano *(production)* or any machine with CUDA *(development)*
+- **NVIDIA Jetson Orin Nano** (production) or any machine with CUDA *(development)*
 
 ### 1. Clone
 
@@ -191,60 +190,52 @@ git clone https://github.com/mandarwagh9/overwatch.git
 cd overwatch
 ```
 
-### 2. Generate SSL Certificates
+### 2. Local Development (Windows/Mac/Linux)
 
 ```bash
-mkdir certs
-openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
-  -days 365 -nodes -subj "/CN=overwatch" \
-  -addext "subjectAltName=IP:192.168.1.12,IP:127.0.0.1,DNS:localhost"
-```
-
-### 3. Backend Setup
-
-```bash
+# Backend
 cd backend
-pip install -r requirements.txt        # CPU/Windows
-# pip install -r requirements-jetson.txt  # Jetson Orin Nano
-```
+pip install -r requirements.txt
+python main.py
 
-Create `backend/.env`:
-
-```env
-MODEL_PATH=yolov8n.pt
-DEVICE=auto
-HALF_PRECISION=false
-DETECTION_CLASSES=[0]
-SSL_ENABLED=true
-HOST=0.0.0.0
-PORT=8000
-```
-
-### 4. Frontend Setup
-
-```bash
+# Frontend (new terminal)
 cd frontend
 npm install
+npm start
 ```
 
-Create `frontend/.env`:
+Open **https://localhost:3000** — accept the self-signed certificate warning.
 
-```env
-REACT_APP_BACKEND_HOST=192.168.1.12
-REACT_APP_BACKEND_PORT=8000
-```
-
-### 5. Run
+### 3. Deploy to Jetson
 
 ```bash
-# Terminal 1 — Backend
-cd backend && python main.py
-
-# Terminal 2 — Frontend
-cd frontend && npm start
+# One-command deployment - uploads code, builds frontend, starts backend
+python scripts/deploy_jetson.py
 ```
 
-Open **https://localhost:3001** — accept the self-signed certificate warning.
+This script will:
+- Connect to Jetson at `192.168.1.12`
+- Upload backend, frontend build, and SSL certs
+- Install Python dependencies
+- Create optimized `.env` config
+- Start the backend
+
+### 4. Access
+
+| Service | URL |
+|---|---|
+| Admin Dashboard | https://192.168.1.12:8000 |
+| Mobile Camera | https://192.168.1.12:8000/mobile |
+
+### Quick Operations
+
+```bash
+# Restart backend (without redeploying)
+python scripts/restart_jetson.py
+
+# View logs
+ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
+```
 
 ---
 
