@@ -190,6 +190,35 @@ git clone https://github.com/mandarwagh9/overwatch.git
 cd overwatch
 ```
 
+### 2. Build & Run
+
+```bash
+# Build frontend
+cd frontend
+npm install
+npm run build
+cd ..
+
+# Start backend (serves frontend + API on port 8000)
+cd backend
+python main.py
+```
+
+That's it! Backend serves both the React app and API at **https://localhost:8000**
+
+### 3. Deploy to Jetson
+
+```bash
+python scripts/deploy_jetson.py
+```
+
+### 4. Access
+
+| Service | URL |
+|---|---|
+| Admin Dashboard | https://192.168.1.12:8000 |
+| Mobile Camera | https://192.168.1.12:8000/mobile |
+
 ### 2. Local Development (Windows/Mac/Linux)
 
 ```bash
@@ -241,47 +270,22 @@ ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
 
 ## 🚀 Deployment
 
-### Jetson Orin Nano (Production)
-
-#### Automated Deployment
+### Deploy to Jetson
 
 ```bash
 python scripts/deploy_jetson.py
 ```
 
-This script handles the full lifecycle via SSH:
-1. Checks system (JetPack, CUDA, TensorRT)
-2. Uploads backend, frontend build, certs via SFTP
-3. Installs Python dependencies
-4. Exports TensorRT engine (if needed)
-5. Creates optimized `.env` configuration
-6. Starts the backend with `nohup`
+This uploads everything (backend + frontend build + certs), installs deps, and starts the backend.
 
-#### Quick Restart (without redeploying)
+### Quick Operations
 
 ```bash
+# Restart backend (without redeploying)
 python scripts/restart_jetson.py
-```
 
-#### Manual Deployment
-
-```bash
-# On Jetson — Export TensorRT engine (one-time)
-python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='engine', half=True, imgsz=640)"
-
-# Create .env
-cat > .env << 'EOF'
-MODEL_PATH=yolov8n.engine
-DEVICE=cuda:0
-HALF_PRECISION=true
-DETECTION_CLASSES=[0]
-SSL_ENABLED=true
-HOST=0.0.0.0
-PORT=8000
-EOF
-
-# Start
-nohup python3 main.py > /tmp/overwatch.log 2>&1 &
+# View logs
+ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
 ```
 
 ---
