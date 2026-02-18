@@ -128,40 +128,43 @@ OVERWATCH/
 │   ├── yolov8n.pt                        # YOLOv8 nano weights (~6 MB)
 │   ├── yolov8n.engine                    # TensorRT FP16 engine (Jetson, ~8.9 MB)
 │   ├── .env                              # Runtime configuration
-│   ├── static/
-│   │   └── mobile.html                   # Standalone mobile camera page
+│   ├── certs/                            # SSL certificates
 │   └── app/
-│       ├── config.py                     # Pydantic settings with .env support
-│       ├── api/
-│       │   └── websocket_handler.py      # WS connection manager, frame encoding
-│       └── core/
-│           ├── perception_pipeline.py    # Singleton detect→track→fuse loop
-│           ├── detection_engine.py       # YOLOv8 wrapper + appearance features
-│           ├── tracking_manager.py       # Hungarian / DeepSORT / Simple tracker
-│           ├── world_model.py            # Kalman filter, cross-cam fusion, trust
-│           └── camera_manager.py         # Physical + virtual camera management
+│       ├── application/                  # Use cases & business logic
+│       │   ├── ports.py                  # Repository interfaces
+│       │   └── services.py               # Perception pipeline service
+│       ├── domain/                       # Core entities
+│       │   └── entities.py               # Detection, Track, WorldObject, etc.
+│       └── infrastructure/               # Adapters
+│           ├── camera_adapter.py          # OpenCV camera capture
+│           ├── detection_adapter.py      # YOLO wrapper
+│           ├── tracking_adapter.py        # Hungarian/DeepSORT
+│           ├── world_model_adapter.py     # Kalman filter fusion
+│           └── websocket_adapter.py       # Binary msgpack broadcast
 │
 ├── frontend/                             # React 18 Admin Dashboard
 │   ├── package.json
 │   ├── .env                              # REACT_APP_BACKEND_HOST / PORT
+│   ├── build/                            # Production build
 │   └── src/
-│       ├── App.jsx                       # Dashboard layout, WS event handling
-│       ├── App.css                       # Dark tactical theme
-│       ├── components/
-│       │   └── CameraDisplay.jsx         # Canvas AR overlay renderer
 │       ├── pages/
-│       │   ├── MobileCamera.jsx          # Phone camera streaming UI
-│       │   └── MobileCamera.css
-│       └── services/
-│           ├── websocket.js              # msgpack binary WS client
-│           └── cameraStream.js           # getUserMedia → WS + GPS/IMU capture
+│       │   ├── AdminDashboard.jsx        # Main camera grid view
+│       │   └── MobileCamera.jsx          # Phone camera streaming UI
+│       ├── components/
+│       │   ├── CameraDisplay.jsx         # Canvas AR overlay renderer
+│       │   ├── StatsPanel.jsx            # System statistics
+│       │   └── ConnectionStatus.jsx      # WS connection indicator
+│       ├── application/hooks/            # React hooks
+│       │   ├── useCameraData.js         # Frame/detection handling
+│       │   ├── useWebSocket.js           # WebSocket connection
+│       │   └── useSystemStats.js         # Backend status polling
+│       └── infrastructure/
+│           ├── websocketAdapter.js       # msgpack binary WS client
+│           └── cameraStreamAdapter.js     # getUserMedia → WS
 │
 ├── scripts/                              # Deployment & Operations
-│   ├── deploy_v2.py                      # Full SSH/SFTP deployment to Jetson
-│   ├── restart_jetson.py                 # Force-kill and restart backend
-│   ├── check_logs.py                     # Verify Jetson logs and imports
-│   ├── check_status.py                   # Monitor API health, connections, GPU
-│   └── ws_test.py                        # CLI WebSocket test client
+│   ├── deploy_jetson.py                  # Full SSH/SFTP deployment to Jetson
+│   └── restart_jetson.py                  # Quick restart backend
 │
 ├── certs/                                # SSL certificates (self-signed)
 │   ├── cert.pem
@@ -194,7 +197,7 @@ cd overwatch
 mkdir certs
 openssl req -x509 -newkey rsa:2048 -keyout certs/key.pem -out certs/cert.pem \
   -days 365 -nodes -subj "/CN=overwatch" \
-  -addext "subjectAltName=IP:192.168.1.8,IP:127.0.0.1,DNS:localhost"
+  -addext "subjectAltName=IP:192.168.1.12,IP:127.0.0.1,DNS:localhost"
 ```
 
 ### 3. Backend Setup
@@ -227,7 +230,7 @@ npm install
 Create `frontend/.env`:
 
 ```env
-REACT_APP_BACKEND_HOST=192.168.1.8
+REACT_APP_BACKEND_HOST=192.168.1.12
 REACT_APP_BACKEND_PORT=8000
 ```
 
@@ -252,16 +255,22 @@ Open **https://localhost:3001** — accept the self-signed certificate warning.
 #### Automated Deployment
 
 ```bash
-python scripts/deploy_v2.py
+python scripts/deploy_jetson.py
 ```
 
 This script handles the full lifecycle via SSH:
-1. Kills any existing backend process
-2. Uploads all 8 backend files via SFTP
-3. Installs `scipy` and `PyJWT` dependencies
-4. Verifies all imports
-5. Starts the backend with `nohup`
-6. Validates health check returns v2.0.0
+1. Checks system (JetPack, CUDA, TensorRT)
+2. Uploads backend, frontend build, certs via SFTP
+3. Installs Python dependencies
+4. Exports TensorRT engine (if needed)
+5. Creates optimized `.env` configuration
+6. Starts the backend with `nohup`
+
+#### Quick Restart (without redeploying)
+
+```bash
+python scripts/restart_jetson.py
+```
 
 #### Manual Deployment
 
@@ -283,15 +292,6 @@ EOF
 # Start
 nohup python3 main.py > /tmp/overwatch.log 2>&1 &
 ```
-
-#### Operations Scripts
-
-| Script | Purpose |
-|---|---|
-| `scripts/deploy_v2.py` | Full deployment (upload, deps, restart, verify) |
-| `scripts/restart_jetson.py` | Force-kill all processes and restart |
-| `scripts/check_logs.py` | Read startup logs, verify scipy + pipeline imports |
-| `scripts/check_status.py` | API health, active WebSocket connections, GPU stats |
 
 ---
 
@@ -526,7 +526,19 @@ python scripts/restart_jetson.py
 # Or manually:
 pkill -9 -f 'python3 main.py'
 sleep 2
-cd /home/mandar/OVERWATCH/backend && nohup python3 main.py > /tmp/overwatch.log 2>&1 &
+cd /home/mandar/overwatch/backend && nohup python3 main.py > /tmp/overwatch.log 2>&1 &
+```
+</details>
+
+<details>
+<summary><strong>Checking Jetson logs</strong></summary>
+
+```bash
+# From your development machine
+python scripts/restart_jetson.py
+
+# Or via SSH
+ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
 ```
 </details>
 
@@ -539,7 +551,7 @@ python scripts/check_logs.py
 python scripts/check_status.py
 
 # Or via SSH
-ssh mandar@192.168.1.8 'tail -50 /tmp/overwatch.log'
+ssh mandar@192.168.1.12 'tail -50 /tmp/overwatch.log'
 ```
 </details>
 <details>
