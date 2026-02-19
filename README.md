@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <a href="#-demo-video">Demo</a> ·
   <a href="#-features">Features</a> ·
   <a href="#-architecture">Architecture</a> ·
   <a href="#-quick-start">Quick Start</a> ·
@@ -22,6 +23,14 @@
   <a href="#-api-reference">API Reference</a> ·
   <a href="#-troubleshooting">Troubleshooting</a>
 </p>
+
+---
+
+## Demo Video
+
+Watch the demo video to see OVERWATCH in action:
+
+[Demo Video](./DEMO-VID.mp4)
 
 ---
 

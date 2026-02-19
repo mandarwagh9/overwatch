@@ -192,7 +192,7 @@ export function getConfig(path, defaultValue) {
  * @returns {string}
  */
 export function getWebSocketUrl() {
-  const protocol = getConfig('backend.protocol', 'wss');
+  const protocol = getConfig('backend.protocol', 'ws');
   const host = getConfig('backend.host', window.location.hostname);
   const port = getConfig('backend.port', 8000);
   return `${protocol}://${host}:${port}/ws`;
@@ -203,7 +203,7 @@ export function getWebSocketUrl() {
  * @returns {string}
  */
 export function getCameraWebSocketUrl() {
-  const protocol = getConfig('backend.protocol', 'wss');
+  const protocol = getConfig('backend.protocol', 'ws');
   const host = getConfig('backend.host', window.location.hostname);
   const port = getConfig('backend.port', 8000);
   return `${protocol}://${host}:${port}/ws/camera`;

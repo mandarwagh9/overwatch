@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 # Configuration
-JETSON_HOST = "192.168.1.12"
+JETSON_HOST = "192.168.1.10"
 JETSON_USER = "mandar"
 JETSON_PASS = "mandar"
 REMOTE_DIR = "/home/mandar/overwatch"

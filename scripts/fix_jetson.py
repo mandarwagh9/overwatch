@@ -23,7 +23,8 @@ def run(cmd, t=120):
 
 # 1. Check last logs
 print("\n=== LAST LOGS ===")
-run("tail -50 /tmp/overwatch.log")
+run("tail -50 /tmp/overwatch.log" \
+")
 
 # 2. Upload fixed files
 print("\n=== UPLOADING FIXED FILES ===")
