@@ -28,9 +28,7 @@
 
 ## Demo Video
 
-Watch the demo video to see OVERWATCH in action:
-
-[![OVERWATCH Demo](https://img.youtube.com/vi/r739yV-Wn3Y/maxresdefault.jpg)](https://youtu.be/r739yV-Wn3Y)
+[Watch Demo on YouTube](https://youtu.be/r739yV-Wn3Y)
 
 ---
 
