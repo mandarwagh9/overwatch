@@ -30,7 +30,7 @@
 
 Watch the demo video to see OVERWATCH in action:
 
-[Demo Video](./DEMO-VID.mp4)
+[![OVERWATCH Demo](https://img.youtube.com/vi/r739yV-Wn3Y/maxresdefault.jpg)](https://youtu.be/r739yV-Wn3Y)
 
 ---
 
