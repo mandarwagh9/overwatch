@@ -10,7 +10,7 @@
 <h1 align="center">🎯 OVERWATCH</h1>
 
 <p align="center">
-  <strong>Real-time multi-agent collaborative perception system</strong><br/>
+  <strong>Real-time multi-agent collaborative perception system</strong> (Prototype Iteration 1)<br/>
   <em>Multi-camera tracking · AI-powered sensor fusion · Augmented reality overlays · Edge deployment</em>
 </p>
 
@@ -26,7 +26,7 @@
 
 ---
 
-## Demo Video
+## Demo Video (Prototype Iteration 1)
 
 [Watch Demo on YouTube](https://youtu.be/L_jDzPQBXO8)
 
