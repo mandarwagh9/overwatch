@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     ws_max_size: int = Field(default=16777216, description="Max WebSocket message size")
     ws_ping_interval: int = Field(default=20, ge=5)
     ws_ping_timeout: int = Field(default=20, ge=5)
+
+    # Security (additive, default-off)
+    cors_origins: List[str] = Field(
+        default=["*"],
+        description="CORS allowlist; default ['*'] preserves dev behavior"
+    )
+    max_ws_clients: int = Field(
+        default=100,
+        description="Maximum concurrent WS viewers; new connections rejected past this"
+    )
     
     # SSL settings
     ssl_enabled: bool = Field(default=True)

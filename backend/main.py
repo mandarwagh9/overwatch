@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.infrastructure.container import ApplicationContainer, create_container
+from app.infrastructure.config_adapter import get_settings
 
 
 # Configure logging
@@ -75,9 +76,10 @@ app = FastAPI(
 )
 
 # CORS middleware
+_settings_for_cors = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_settings_for_cors.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
