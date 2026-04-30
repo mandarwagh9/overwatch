@@ -60,7 +60,7 @@ class YOLODetector:
             logger.info(f"Loading YOLO model: {self._model_path}")
             
             # Load model in thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._model = await loop.run_in_executor(
                 None,
                 lambda: self._YOLO(self._model_path, task='detect')
@@ -207,7 +207,7 @@ class DetectionRepositoryImpl(DetectionRepository):
         if not self._is_ready:
             raise RuntimeError("Detection engine not initialized")
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         detections = await loop.run_in_executor(
             self._executor,
             self._detector.detect,

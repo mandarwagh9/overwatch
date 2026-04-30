@@ -422,7 +422,7 @@ class OpenCVCameraRepository(CameraRepository):
             )
             
             # Run in thread pool
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             success = await loop.run_in_executor(self._executor, camera.start)
             
             if success:
