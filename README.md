@@ -64,7 +64,7 @@ The system runs a **singleton perception pipeline** — detection, tracking, and
 | **AR Overlays** | Canvas-based: cyan detection brackets, yellow track boxes, green homography ghosts, red extrapolation ghosts |
 | **Binary Protocol** | msgpack-serialized snapshots — zero-copy broadcast to all viewers |
 | **SSL/TLS** | Self-signed certificates with SAN for LAN IP access (required for `getUserMedia`) |
-| **JWT Authentication** | Token issuance endpoint (`POST /api/token`) with configurable expiry |
+| **JWT Authentication (optional)** | Default-off; enable with `AUTH_ENABLED=true`. Token issuance via `POST /api/token`; WS endpoints accept `?token=...` query param |
 | **Edge Deployment** | Automated SSH/SFTP deployment to Jetson Orin Nano via paramiko |
 
 ---

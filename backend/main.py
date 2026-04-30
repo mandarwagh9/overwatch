@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.infrastructure.container import ApplicationContainer, create_container
 from app.infrastructure.config_adapter import get_settings
+from app.infrastructure.auth import verify_token, issue_token
 
 
 # Configure logging
@@ -214,11 +215,30 @@ async def list_cameras():
     }
 
 
+@app.post("/api/token")
+async def issue_token_endpoint(payload: dict):
+    """Issue a JWT for the given subject. 404 when auth is disabled."""
+    settings = get_settings()
+    if not settings.auth_enabled:
+        raise HTTPException(status_code=404, detail="Auth not enabled")
+    subject = payload.get("subject", "anonymous")
+    token = issue_token(subject, settings)
+    if token is None:
+        raise HTTPException(status_code=500, detail="Token issuance failed")
+    return {"access_token": token, "token_type": "bearer"}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Main WebSocket endpoint for real-time data."""
     if not container:
         await websocket.close(code=1011, reason="System not initialized")
+        return
+
+    settings = get_settings()
+    token = websocket.query_params.get("token")
+    if not verify_token(token, settings):
+        await websocket.close(code=1008, reason="Unauthorized")
         return
 
     try:
@@ -250,9 +270,15 @@ async def camera_websocket_endpoint(websocket: WebSocket):
     if not container:
         await websocket.close(code=1011, reason="System not initialized")
         return
-    
+
+    settings = get_settings()
+    token = websocket.query_params.get("token")
+    if not verify_token(token, settings):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
     import json
-    
+
     await websocket.accept()
 
     camera_id: Optional[int] = None
