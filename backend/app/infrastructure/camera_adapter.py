@@ -308,6 +308,7 @@ class OpenCVCameraRepository(CameraRepository):
         self._virtual_cameras: Dict[int, VirtualCamera] = {}
         self._executor = ThreadPoolExecutor(max_workers=4)
         self._lock = asyncio.Lock()
+        self._virtual_camera_lock = threading.Lock()
         
         self._target_resolution = (
             self._config.get_int("frame_width", 1280),
@@ -416,47 +417,50 @@ class OpenCVCameraRepository(CameraRepository):
     
     def register_virtual_camera(self, camera_id: Optional[int] = None) -> Optional[int]:
         """Register a virtual camera."""
-        if len(self._cameras) + len(self._virtual_cameras) >= self._max_cameras:
-            logger.error(f"Maximum camera limit reached")
-            return None
-        
-        # Find available slot
-        if camera_id is None:
-            for i in range(self._max_cameras):
-                if i not in self._cameras and i not in self._virtual_cameras:
-                    camera_id = i
-                    break
-        
-        if camera_id is None:
-            return None
-        
-        if camera_id in self._cameras or camera_id in self._virtual_cameras:
-            logger.warning(f"Camera slot {camera_id} already in use")
-            return None
-        
-        max_width = self._config.get_int("mobile_camera_max_width", 640)
-        vcam = VirtualCamera(camera_id, max_width)
-        self._virtual_cameras[camera_id] = vcam
-        
-        logger.info(f"Virtual camera {camera_id} registered")
-        return camera_id
-    
+        with self._virtual_camera_lock:
+            if len(self._cameras) + len(self._virtual_cameras) >= self._max_cameras:
+                logger.error(f"Maximum camera limit reached")
+                return None
+
+            # Find available slot
+            if camera_id is None:
+                for i in range(self._max_cameras):
+                    if i not in self._cameras and i not in self._virtual_cameras:
+                        camera_id = i
+                        break
+
+            if camera_id is None:
+                return None
+
+            if camera_id in self._cameras or camera_id in self._virtual_cameras:
+                logger.warning(f"Camera slot {camera_id} already in use")
+                return None
+
+            max_width = self._config.get_int("mobile_camera_max_width", 640)
+            vcam = VirtualCamera(camera_id, max_width)
+            self._virtual_cameras[camera_id] = vcam
+
+            logger.info(f"Virtual camera {camera_id} registered")
+            return camera_id
+
     def unregister_virtual_camera(self, camera_id: int) -> bool:
         """Unregister a virtual camera."""
-        if camera_id not in self._virtual_cameras:
-            return False
-        
-        vcam = self._virtual_cameras.pop(camera_id)
+        with self._virtual_camera_lock:
+            if camera_id not in self._virtual_cameras:
+                return False
+
+            vcam = self._virtual_cameras.pop(camera_id)
         vcam.stop()
         logger.info(f"Virtual camera {camera_id} unregistered")
         return True
-    
+
     def inject_frame(self, camera_id: int, jpeg_bytes: bytes) -> bool:
         """Inject a JPEG frame into a virtual camera."""
-        if camera_id not in self._virtual_cameras:
+        with self._virtual_camera_lock:
+            vcam = self._virtual_cameras.get(camera_id)
+        if vcam is None:
             return False
-        
-        return self._virtual_cameras[camera_id].inject_frame(jpeg_bytes)
+        return vcam.inject_frame(jpeg_bytes)
     
     def _get_camera_url(self, camera_id: int) -> Optional[str]:
         """Get camera URL from configuration."""
