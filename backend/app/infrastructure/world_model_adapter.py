@@ -293,7 +293,7 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         self._cleanup_old_objects(now)
         
         world_objs = list(self._world_objects.values())
-        logger.info(f"🌍 World objects: {len(world_objs)}")
+        logger.debug(f"🌍 World objects: {len(world_objs)}")
         
         return world_objs
     

@@ -458,13 +458,13 @@ class OpenCVCameraRepository(CameraRepository):
         for cam_id, vcam in self._virtual_cameras.items():
             frame = vcam.get_latest_frame()
             if frame:
-                logger.info(f"✅ Retrieved frame from virtual camera {cam_id}")
+                logger.debug(f"✅ Retrieved frame from virtual camera {cam_id}")
                 frames.append(frame)
             else:
                 logger.warning(f"⚠️ No frame available from virtual camera {cam_id}, buffer may be empty")
         
         if frames:
-            logger.info(f"📹 Total frames retrieved for processing: {len(frames)}")
+            logger.debug(f"📹 Total frames retrieved for processing: {len(frames)}")
         
         return frames
     

@@ -135,7 +135,7 @@ class YOLODetector:
                 confidences = result.boxes.conf.cpu().numpy()
                 classes = result.boxes.cls.cpu().numpy().astype(int)
                 
-                logger.info(f"Detection: camera={frame.camera_id if hasattr(frame, 'camera_id') else '?'}, boxes={len(boxes)}, classes={np.unique(classes).tolist()}")
+                logger.debug(f"Detection: camera={frame.camera_id if hasattr(frame, 'camera_id') else '?'}, boxes={len(boxes)}, classes={np.unique(classes).tolist()}")
                 
                 # Extract keypoints if available
                 keypoints_data = None
