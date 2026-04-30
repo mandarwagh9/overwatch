@@ -165,7 +165,7 @@ class YOLODetector:
                             ))
                     
                     detection = Detection(
-                        detection_id=f"det_{timestamp.timestamp()}_{idx}",
+                        detection_id=f"det_{timestamp.timestamp()}_{idx}_{id(boxes)}",
                         camera_id=-1,  # Will be set by caller
                         bbox=bbox,
                         confidence=float(conf),
@@ -181,7 +181,7 @@ class YOLODetector:
             
         except Exception as e:
             logger.error(f"Detection error: {e}")
-            raise RuntimeError(f"Detection failed: {e}")
+            raise RuntimeError(f"Detection failed: {e}") from e
 
 
 class DetectionRepositoryImpl(DetectionRepository):
