@@ -1,0 +1,24 @@
+# Local config
+.env
+.env.local
+
+# Secrets
+*.pem
+*.key
+*.crt
+
+# Models (large binaries)
+*.pt
+*.engine
+*.onnx
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
