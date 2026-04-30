@@ -49,6 +49,11 @@ function MobileCamera() {
       cameraStreamAdapter.off(StreamEvents.CAMERA_REGISTERED, handleCameraRegistered);
       cameraStreamAdapter.off(StreamEvents.STATS_UPDATE, handleStatsUpdate);
       cameraStreamAdapter.off(StreamEvents.ERROR, handleError);
+      try {
+        cameraStreamAdapter.stop();
+      } catch (e) {
+        // adapter may not be running; safe to ignore
+      }
     };
   }, []);
 
