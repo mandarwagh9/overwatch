@@ -1,12 +1,18 @@
 """Quick WebSocket test against Jetson backend."""
-import paramiko
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _jetson_common import connect, get_credentials, run
+
 import json
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('192.168.1.8', username='mandar', password='mandar', timeout=15)
+creds = get_credentials()
+print(f"Connecting to {creds['host']}...")
+c = connect(creds)
 
-def run(cmd):
+
+def remote_run(cmd):
     si, so, se = c.exec_command(cmd, timeout=30)
     o = so.read().decode('utf-8', errors='replace')
     e = se.read().decode('utf-8', errors='replace')
@@ -14,14 +20,14 @@ def run(cmd):
 
 # Check latest logs
 print('=== LATEST LOGS (last 30 lines) ===')
-o, e = run('tail -30 /tmp/overwatch.log')
+o, e = remote_run('tail -30 /tmp/overwatch.log')
 print(o)
 if e:
     print('ERR:', e[:300])
 
 # Check API endpoints
 print('\n=== API ROOT ===')
-o, e = run('curl -sk https://localhost:8000/')
+o, e = remote_run('curl -sk https://localhost:8000/')
 try:
     data = json.loads(o)
     print(json.dumps(data, indent=2))
@@ -30,12 +36,12 @@ except:
 
 # Check active connections (rough proxy)
 print('\n=== ACTIVE CONNECTIONS ===')
-o, e = run('ss -tnp | grep 8000 | head -10')
+o, e = remote_run('ss -tnp | grep 8000 | head -10')
 print(o or 'No connections yet')
 
 # Memory & GPU
 print('\n=== GPU STATUS ===')
-o, e = run('tegrastats --interval 1000 --count 1 2>/dev/null || echo "tegrastats not available"')
+o, e = remote_run('tegrastats --interval 1000 --count 1 2>/dev/null || echo "tegrastats not available"')
 print(o[:300] if o else 'N/A')
 
 c.close()

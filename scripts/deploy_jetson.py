@@ -11,19 +11,25 @@ Usage:
     python deploy_jetson.py --tensorrt   # Export TensorRT engine only
 """
 
-import paramiko
-import os
 import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _jetson_common import connect as _common_connect, get_credentials, run as _common_run
+
+import paramiko
 import time
 import argparse
+import secrets
 from pathlib import Path
 from typing import Optional, Tuple
 
-# Configuration
-JETSON_HOST = "192.168.1.10"
-JETSON_USER = "mandar"
-JETSON_PASS = "mandar"
+# Configuration (defaults; overridden by JETSON_* env vars at runtime)
+JETSON_HOST = os.environ.get("JETSON_HOST", "192.168.1.10")
+JETSON_USER = os.environ.get("JETSON_USER", "mandar")
 REMOTE_DIR = "/home/mandar/overwatch"
+STAGING_SUFFIX = ".new"
+BACKUP_SUFFIX = ".bak"
 
 # Local project root
 LOCAL_PROJECT = Path(__file__).parent.parent.resolve()
@@ -52,28 +58,22 @@ SKIP_FILES = {".env", "*.pyc", "*.pyo"}
 
 
 class JetsonDeployer:
-    def __init__(self, host: str, user: str, password: str):
-        self.host = host
-        self.user = user
-        self.password = password
+    def __init__(self, creds: Optional[dict] = None):
+        if creds is None:
+            creds = get_credentials()
+        self.creds = creds
+        self.host = creds["host"]
+        self.user = creds["user"]
         self.client: Optional[paramiko.SSHClient] = None
         self.sftp = None
-        
+
     def connect(self) -> None:
         """Establish SSH connection to Jetson."""
         print(f"\n{'='*60}")
         print(f"🔌 Connecting to {self.user}@{self.host}...")
         print(f"{'='*60}")
-        
-        self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.client.connect(
-            self.host, 
-            username=self.user, 
-            password=self.password, 
-            timeout=30,
-            banner_timeout=30
-        )
+
+        self.client = _common_connect(self.creds)
         print("✅ SSH connected!")
         
     def disconnect(self) -> None:
@@ -430,26 +430,51 @@ SSL_KEYFILE=certs/key.pem
 
 def main():
     parser = argparse.ArgumentParser(description="Deploy Overwatch to Jetson")
-    parser.add_argument("--update", action="store_true", 
+    parser.add_argument("--update", action="store_true",
                         help="Incremental update (skip dependency install)")
     parser.add_argument("--tensorrt", action="store_true",
                         help="Export TensorRT engine only")
-    parser.add_argument("--host", default=JETSON_HOST,
-                        help=f"Jetson IP address (default: {JETSON_HOST})")
+    parser.add_argument("--host", default=None,
+                        help=f"Jetson IP address (overrides JETSON_HOST env; default: {JETSON_HOST})")
+    parser.add_argument("--rollback", action="store_true",
+                        help="Swap backup back to current and exit")
     args = parser.parse_args()
-    
+
     # Set UTF-8 encoding for Windows compatibility
-    import sys
     if sys.platform == 'win32':
         import codecs
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
-    
+
+    # Allow --host CLI override of env-driven default
+    if args.host:
+        os.environ["JETSON_HOST"] = args.host
+
+    creds = get_credentials()
+
     print(f"\n{'#'*60}")
     print(f"# OVERWATCH -> JETSON DEPLOYMENT")
-    print(f"# Target: {args.host}")
+    print(f"# Target: {creds['host']}")
     print(f"{'#'*60}")
-    
-    deployer = JetsonDeployer(args.host, JETSON_USER, JETSON_PASS)
+
+    deployer = JetsonDeployer(creds)
+
+    if args.rollback:
+        deployer.connect()
+        try:
+            print("Rolling back...")
+            _common_run(
+                deployer.client,
+                f"if [ ! -d {REMOTE_DIR}{BACKUP_SUFFIX} ]; then echo 'No backup to roll back to' >&2; exit 1; fi",
+            )
+            _common_run(deployer.client, f"rm -rf {REMOTE_DIR}{STAGING_SUFFIX}", check=False)
+            _common_run(deployer.client, f"mv {REMOTE_DIR} {REMOTE_DIR}{STAGING_SUFFIX}")
+            _common_run(deployer.client, f"mv {REMOTE_DIR}{BACKUP_SUFFIX} {REMOTE_DIR}")
+            _common_run(deployer.client, f"rm -rf {REMOTE_DIR}{STAGING_SUFFIX}", check=False)
+            print("Rolled back.")
+        finally:
+            deployer.disconnect()
+        sys.exit(0)
+
     deployer.deploy(update_only=args.update, tensorrt_only=args.tensorrt)
 
 
