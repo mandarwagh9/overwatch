@@ -33,15 +33,21 @@ class ClientConnection:
 class WebSocketCommunicationRepository(CommunicationRepository):
     """WebSocket communication repository using msgpack."""
     
-    def __init__(self):
+    def __init__(self, max_clients: int = 100):
         self._clients: Dict[str, ClientConnection] = {}
         self._next_id = 1
         self._lock = asyncio.Lock()
-        
-        logger.info("WebSocketCommunicationRepository initialized")
-    
+        self._max_clients = max_clients
+
+        logger.info(
+            f"WebSocketCommunicationRepository initialized (max_clients={max_clients})"
+        )
+
     async def connect(self, websocket: WebSocket) -> str:
         """Accept a new WebSocket connection."""
+        if len(self._clients) >= self._max_clients:
+            await websocket.close(code=1013, reason="Server at capacity")
+            raise RuntimeError("max ws clients reached")
         await websocket.accept()
         
         connection_id = f"client_{self._next_id}"

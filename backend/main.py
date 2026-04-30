@@ -220,9 +220,14 @@ async def websocket_endpoint(websocket: WebSocket):
     if not container:
         await websocket.close(code=1011, reason="System not initialized")
         return
-    
-    connection_id = await container.communication_repo.connect(websocket)
-    
+
+    try:
+        connection_id = await container.communication_repo.connect(websocket)
+    except RuntimeError as e:
+        # Cap exceeded; close already issued by connect()
+        logger.warning(f"WebSocket rejected: {e}")
+        return
+
     try:
         # Keep connection alive
         while True:
@@ -232,7 +237,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Handle any client commands here
             except WebSocketDisconnect:
                 break
-                
+
     except Exception as e:
         logger.error(f"WebSocket error for {connection_id}: {e}")
     finally:

@@ -135,7 +135,9 @@ def create_container() -> ApplicationContainer:
     detection_repo = DetectionRepositoryImpl(config_repo)
     tracking_repo = TrackingRepositoryImpl(config_repo)
     world_model_repo = WorldModelRepositoryImpl(config_repo)
-    communication_repo = WebSocketCommunicationRepository()
+    communication_repo = WebSocketCommunicationRepository(
+        max_clients=config_repo.get_int("max_ws_clients", 100)
+    )
     frame_encoder_repo = OpenCVFrameEncoder()
     
     # Create container
