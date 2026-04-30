@@ -287,6 +287,10 @@ class VirtualCamera:
     
     def inject_frame(self, jpeg_bytes: bytes) -> bool:
         """Inject a JPEG frame from mobile client."""
+        # Magic-byte gate: reject anything that isn't a JPEG before cv2.imdecode
+        if len(jpeg_bytes) < 3 or jpeg_bytes[:3] != b"\xff\xd8\xff":
+            self._frames_dropped += 1
+            return False
         try:
             # Decode JPEG
             np_arr = np.frombuffer(jpeg_bytes, np.uint8)
