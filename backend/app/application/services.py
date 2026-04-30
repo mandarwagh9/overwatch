@@ -133,6 +133,8 @@ class PerceptionPipelineService:
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
                     
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(f"Pipeline tick error: {e}", exc_info=True)
                 await asyncio.sleep(interval)
