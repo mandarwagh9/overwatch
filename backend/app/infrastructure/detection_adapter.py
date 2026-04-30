@@ -60,7 +60,7 @@ class YOLODetector:
             logger.info(f"Loading YOLO model: {self._model_path}")
             
             # Load model in thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._model = await loop.run_in_executor(
                 None,
                 lambda: self._YOLO(self._model_path, task='detect')
@@ -135,7 +135,7 @@ class YOLODetector:
                 confidences = result.boxes.conf.cpu().numpy()
                 classes = result.boxes.cls.cpu().numpy().astype(int)
                 
-                logger.info(f"Detection: camera={frame.camera_id if hasattr(frame, 'camera_id') else '?'}, boxes={len(boxes)}, classes={np.unique(classes).tolist()}")
+                logger.debug(f"Detection: camera={frame.camera_id if hasattr(frame, 'camera_id') else '?'}, boxes={len(boxes)}, classes={np.unique(classes).tolist()}")
                 
                 # Extract keypoints if available
                 keypoints_data = None
@@ -165,7 +165,7 @@ class YOLODetector:
                             ))
                     
                     detection = Detection(
-                        detection_id=f"det_{timestamp.timestamp()}_{idx}",
+                        detection_id=f"det_{timestamp.timestamp()}_{idx}_{id(boxes)}",
                         camera_id=-1,  # Will be set by caller
                         bbox=bbox,
                         confidence=float(conf),
@@ -181,7 +181,7 @@ class YOLODetector:
             
         except Exception as e:
             logger.error(f"Detection error: {e}")
-            raise RuntimeError(f"Detection failed: {e}")
+            raise RuntimeError(f"Detection failed: {e}") from e
 
 
 class DetectionRepositoryImpl(DetectionRepository):
@@ -207,7 +207,7 @@ class DetectionRepositoryImpl(DetectionRepository):
         if not self._is_ready:
             raise RuntimeError("Detection engine not initialized")
         
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         detections = await loop.run_in_executor(
             self._executor,
             self._detector.detect,

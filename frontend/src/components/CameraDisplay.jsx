@@ -45,8 +45,8 @@ function CameraDisplay({
 }) {
   const canvasRef = useRef(null);
   const imageRef = useRef(null);
-  const [dimensions, setDimensions] = useState({ width: 640, height: 480 });
-  const [stats, setStats] = useState({ 
+  const prevBlobUrlRef = useRef(null);
+  const [stats, setStats] = useState({
     detectionsCount: 0, 
     tracksCount: 0, 
     predictionsCount: 0 
@@ -445,27 +445,42 @@ function CameraDisplay({
   // Handle frame data changes
   useEffect(() => {
     if (!frameData || !imageRef.current) return;
-    
+
     try {
       const blob = new Blob([frameData], { type: 'image/jpeg' });
       const url = URL.createObjectURL(blob);
+      if (prevBlobUrlRef.current) {
+        URL.revokeObjectURL(prevBlobUrlRef.current);
+      }
+      prevBlobUrlRef.current = url;
+
       const img = imageRef.current;
-      
+
       img.onload = () => {
         if (canvasRef.current) {
           canvasRef.current.width = img.naturalWidth;
           canvasRef.current.height = img.naturalHeight;
-          setDimensions({ width: img.naturalWidth, height: img.naturalHeight });
         }
         drawOverlays();
-        URL.revokeObjectURL(url);
       };
-      
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        if (prevBlobUrlRef.current === url) prevBlobUrlRef.current = null;
+      };
+
       img.src = url;
     } catch (e) {
       console.error('Frame load error:', e);
     }
   }, [frameData, drawOverlays]);
+
+  // Revoke any outstanding blob URL on unmount
+  useEffect(() => () => {
+    if (prevBlobUrlRef.current) {
+      URL.revokeObjectURL(prevBlobUrlRef.current);
+      prevBlobUrlRef.current = null;
+    }
+  }, []);
 
   // Redraw overlays when detections/tracks/predictions change
   useEffect(() => {
@@ -494,18 +509,16 @@ function CameraDisplay({
           alt={`Camera ${cameraId}`}
           style={{ width: '100%', height: 'auto', display: frameData ? 'block' : 'none' }} 
         />
-        <canvas 
+        <canvas
           ref={canvasRef}
-          style={{ 
-            position: 'absolute', 
-            top: 0, 
-            left: 0, 
-            width: '100%', 
-            height: 'auto', 
-            pointerEvents: 'none' 
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: 'auto',
+            pointerEvents: 'none'
           }}
-          width={dimensions.width} 
-          height={dimensions.height} 
         />
         {frameData && <div className="scanline-overlay" />}
         

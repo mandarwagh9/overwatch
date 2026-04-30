@@ -4,9 +4,11 @@ No hardcoded camera URLs - all from configuration.
 """
 from __future__ import annotations
 import asyncio
+import os
 import threading
 import time
 import logging
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue, Empty
@@ -142,23 +144,52 @@ class CameraCapture:
         logger.info(f"Camera {self.camera_id} stopped")
     
     def _capture_loop(self) -> None:
-        """Main capture loop running in separate thread."""
+        """Main capture loop running in separate thread.
+
+        Reconnects ``cv2.VideoCapture`` with exponential backoff after
+        persistent read failures (e.g. RTSP stream drops).
+        """
         frame_times: List[float] = []
-        
-        while self._is_running and self._cap and self._cap.isOpened():
+        consecutive_failures = 0
+        reconnect_threshold = 30  # ~3s at 100ms sleep
+        backoff = 1.0
+        max_backoff = 30.0
+
+        while self._is_running:
             try:
+                if self._cap is None or not self._cap.isOpened():
+                    self._reconnect(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+                    consecutive_failures = 0
+                    continue
+
                 loop_start = time.time()
-                
+
                 ret, frame = self._cap.read()
                 if not ret:
-                    logger.warning(f"Camera {self.camera_id}: Failed to read frame")
-                    time.sleep(0.1)
+                    consecutive_failures += 1
+                    if consecutive_failures >= reconnect_threshold:
+                        logger.warning(
+                            f"Camera {self.camera_id}: {consecutive_failures} consecutive "
+                            f"read failures, reconnecting"
+                        )
+                        try:
+                            self._cap.release()
+                        except Exception:
+                            pass
+                        self._cap = None
+                        consecutive_failures = 0
+                    else:
+                        time.sleep(0.1)
                     continue
-                
+
+                consecutive_failures = 0
+                backoff = 1.0
+
                 # Resize if needed
                 if frame.shape[1] != self.target_width or frame.shape[0] != self.target_height:
                     frame = cv2.resize(frame, (self.target_width, self.target_height))
-                
+
                 # Create CameraFrame
                 camera_frame = CameraFrame(
                     camera_id=self.camera_id,
@@ -166,29 +197,55 @@ class CameraCapture:
                     timestamp=datetime.now(),
                     frame_number=self._buffer.frame_counter
                 )
-                
+
                 # Try to buffer the frame
                 if self._buffer.put(camera_frame):
                     self._frames_captured += 1
                 else:
                     self._frames_dropped += 1
-                
+
                 # Calculate FPS
                 frame_times.append(time.time())
                 if len(frame_times) > 30:
                     frame_times.pop(0)
                 if len(frame_times) > 1:
                     self._current_fps = len(frame_times) / (frame_times[-1] - frame_times[0])
-                
+
                 # Maintain target FPS
                 elapsed = time.time() - loop_start
                 sleep_time = max(0, self.frame_interval - elapsed)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                    
+
             except Exception as e:
                 logger.error(f"Camera {self.camera_id} capture error: {e}")
                 time.sleep(0.1)
+
+    def _reconnect(self, delay_s: float) -> None:
+        """Open VideoCapture with backoff."""
+        time.sleep(delay_s)
+        if not self._is_running:
+            return
+        try:
+            cap = cv2.VideoCapture(self.camera_url, cv2.CAP_FFMPEG)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(self.camera_url)
+            self._cap = cap
+            if self._cap.isOpened():
+                # Reapply capture configuration on reconnect
+                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
+                logger.info(
+                    f"Camera {self.camera_id}: reconnected to {self.camera_url}"
+                )
+            else:
+                logger.warning(
+                    f"Camera {self.camera_id}: reconnect attempt failed"
+                )
+        except Exception as e:
+            logger.error(f"Camera {self.camera_id}: reconnect error: {e}")
     
     def get_latest_frame(self) -> Optional[CameraFrame]:
         """Get the latest frame from the buffer."""
@@ -230,6 +287,10 @@ class VirtualCamera:
     
     def inject_frame(self, jpeg_bytes: bytes) -> bool:
         """Inject a JPEG frame from mobile client."""
+        # Magic-byte gate: reject anything that isn't a JPEG before cv2.imdecode
+        if len(jpeg_bytes) < 3 or jpeg_bytes[:3] != b"\xff\xd8\xff":
+            self._frames_dropped += 1
+            return False
         try:
             # Decode JPEG
             np_arr = np.frombuffer(jpeg_bytes, np.uint8)
@@ -308,6 +369,7 @@ class OpenCVCameraRepository(CameraRepository):
         self._virtual_cameras: Dict[int, VirtualCamera] = {}
         self._executor = ThreadPoolExecutor(max_workers=4)
         self._lock = asyncio.Lock()
+        self._virtual_camera_lock = threading.Lock()
         
         self._target_resolution = (
             self._config.get_int("frame_width", 1280),
@@ -364,7 +426,7 @@ class OpenCVCameraRepository(CameraRepository):
             )
             
             # Run in thread pool
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             success = await loop.run_in_executor(self._executor, camera.start)
             
             if success:
@@ -400,13 +462,13 @@ class OpenCVCameraRepository(CameraRepository):
         for cam_id, vcam in self._virtual_cameras.items():
             frame = vcam.get_latest_frame()
             if frame:
-                logger.info(f"✅ Retrieved frame from virtual camera {cam_id}")
+                logger.debug(f"✅ Retrieved frame from virtual camera {cam_id}")
                 frames.append(frame)
             else:
                 logger.warning(f"⚠️ No frame available from virtual camera {cam_id}, buffer may be empty")
         
         if frames:
-            logger.info(f"📹 Total frames retrieved for processing: {len(frames)}")
+            logger.debug(f"📹 Total frames retrieved for processing: {len(frames)}")
         
         return frames
     
@@ -416,47 +478,50 @@ class OpenCVCameraRepository(CameraRepository):
     
     def register_virtual_camera(self, camera_id: Optional[int] = None) -> Optional[int]:
         """Register a virtual camera."""
-        if len(self._cameras) + len(self._virtual_cameras) >= self._max_cameras:
-            logger.error(f"Maximum camera limit reached")
-            return None
-        
-        # Find available slot
-        if camera_id is None:
-            for i in range(self._max_cameras):
-                if i not in self._cameras and i not in self._virtual_cameras:
-                    camera_id = i
-                    break
-        
-        if camera_id is None:
-            return None
-        
-        if camera_id in self._cameras or camera_id in self._virtual_cameras:
-            logger.warning(f"Camera slot {camera_id} already in use")
-            return None
-        
-        max_width = self._config.get_int("mobile_camera_max_width", 640)
-        vcam = VirtualCamera(camera_id, max_width)
-        self._virtual_cameras[camera_id] = vcam
-        
-        logger.info(f"Virtual camera {camera_id} registered")
-        return camera_id
-    
+        with self._virtual_camera_lock:
+            if len(self._cameras) + len(self._virtual_cameras) >= self._max_cameras:
+                logger.error(f"Maximum camera limit reached")
+                return None
+
+            # Find available slot
+            if camera_id is None:
+                for i in range(self._max_cameras):
+                    if i not in self._cameras and i not in self._virtual_cameras:
+                        camera_id = i
+                        break
+
+            if camera_id is None:
+                return None
+
+            if camera_id in self._cameras or camera_id in self._virtual_cameras:
+                logger.warning(f"Camera slot {camera_id} already in use")
+                return None
+
+            max_width = self._config.get_int("mobile_camera_max_width", 640)
+            vcam = VirtualCamera(camera_id, max_width)
+            self._virtual_cameras[camera_id] = vcam
+
+            logger.info(f"Virtual camera {camera_id} registered")
+            return camera_id
+
     def unregister_virtual_camera(self, camera_id: int) -> bool:
         """Unregister a virtual camera."""
-        if camera_id not in self._virtual_cameras:
-            return False
-        
-        vcam = self._virtual_cameras.pop(camera_id)
+        with self._virtual_camera_lock:
+            if camera_id not in self._virtual_cameras:
+                return False
+
+            vcam = self._virtual_cameras.pop(camera_id)
         vcam.stop()
         logger.info(f"Virtual camera {camera_id} unregistered")
         return True
-    
+
     def inject_frame(self, camera_id: int, jpeg_bytes: bytes) -> bool:
         """Inject a JPEG frame into a virtual camera."""
-        if camera_id not in self._virtual_cameras:
+        with self._virtual_camera_lock:
+            vcam = self._virtual_cameras.get(camera_id)
+        if vcam is None:
             return False
-        
-        return self._virtual_cameras[camera_id].inject_frame(jpeg_bytes)
+        return vcam.inject_frame(jpeg_bytes)
     
     def _get_camera_url(self, camera_id: int) -> Optional[str]:
         """Get camera URL from configuration."""
@@ -476,6 +541,3 @@ class OpenCVCameraRepository(CameraRepository):
         
         return None
 
-
-from datetime import datetime
-import os

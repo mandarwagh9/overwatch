@@ -133,6 +133,8 @@ class PerceptionPipelineService:
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
                     
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(f"Pipeline tick error: {e}", exc_info=True)
                 await asyncio.sleep(interval)
@@ -152,7 +154,7 @@ class PerceptionPipelineService:
         
         # Log detection summary
         total_dets = sum(len(dets) for dets in detections_map.values())
-        logger.info(f"🔄 Pipeline tick: {len(frames)} frames, {total_dets} detections")
+        logger.debug(f"🔄 Pipeline tick: {len(frames)} frames, {total_dets} detections")
         
         # 3. Run tracking for each camera
         tracks_map: Dict[int, List[Track]] = {}
@@ -163,7 +165,7 @@ class PerceptionPipelineService:
             tracks_map[camera_id] = tracks
         
         total_tracks = sum(len(trks) for trks in tracks_map.values())
-        logger.info(f"📍 Tracks: {total_tracks}")
+        logger.debug(f"📍 Tracks: {total_tracks}")
         
         # 4. Update world model with all tracks
         world_objects = await self._world_model_repo.update(tracks_map)

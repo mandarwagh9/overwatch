@@ -18,6 +18,8 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.infrastructure.container import ApplicationContainer, create_container
+from app.infrastructure.config_adapter import get_settings
+from app.infrastructure.auth import verify_token, issue_token
 
 
 # Configure logging
@@ -75,9 +77,10 @@ app = FastAPI(
 )
 
 # CORS middleware
+_settings_for_cors = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_settings_for_cors.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -212,15 +215,39 @@ async def list_cameras():
     }
 
 
+@app.post("/api/token")
+async def issue_token_endpoint(payload: dict):
+    """Issue a JWT for the given subject. 404 when auth is disabled."""
+    settings = get_settings()
+    if not settings.auth_enabled:
+        raise HTTPException(status_code=404, detail="Auth not enabled")
+    subject = payload.get("subject", "anonymous")
+    token = issue_token(subject, settings)
+    if token is None:
+        raise HTTPException(status_code=500, detail="Token issuance failed")
+    return {"access_token": token, "token_type": "bearer"}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Main WebSocket endpoint for real-time data."""
     if not container:
         await websocket.close(code=1011, reason="System not initialized")
         return
-    
-    connection_id = await container.communication_repo.connect(websocket)
-    
+
+    settings = get_settings()
+    token = websocket.query_params.get("token")
+    if not verify_token(token, settings):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
+    try:
+        connection_id = await container.communication_repo.connect(websocket)
+    except RuntimeError as e:
+        # Cap exceeded; close already issued by connect()
+        logger.warning(f"WebSocket rejected: {e}")
+        return
+
     try:
         # Keep connection alive
         while True:
@@ -230,7 +257,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Handle any client commands here
             except WebSocketDisconnect:
                 break
-                
+
     except Exception as e:
         logger.error(f"WebSocket error for {connection_id}: {e}")
     finally:
@@ -243,11 +270,19 @@ async def camera_websocket_endpoint(websocket: WebSocket):
     if not container:
         await websocket.close(code=1011, reason="System not initialized")
         return
-    
+
+    settings = get_settings()
+    token = websocket.query_params.get("token")
+    if not verify_token(token, settings):
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
     import json
-    
+
     await websocket.accept()
-    
+
+    camera_id: Optional[int] = None
+
     try:
         # Wait for registration message
         message = await websocket.receive_text()
@@ -335,17 +370,11 @@ async def camera_websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Camera {camera_id}: Error in receive loop: {e}")
                 break
-                        
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"Camera {camera_id} error: {e}")
-                break
         
     except Exception as e:
         logger.error(f"Camera WebSocket error: {e}")
     finally:
-        if 'camera_id' in locals():
+        if camera_id is not None:
             container.camera_service.unregister_virtual_camera(camera_id)
             logger.info(f"Mobile camera unregistered: {camera_id}")
 
@@ -375,8 +404,16 @@ if __name__ == "__main__":
             ssl_kwargs["ssl_certfile"] = cert_path
             ssl_kwargs["ssl_keyfile"] = key_path
             logger.info(f"🔒 SSL enabled")
+        elif settings.debug:
+            logger.warning(
+                f"⚠️ SSL certificates not found at {cert_path}, "
+                f"running without SSL (debug=True)"
+            )
         else:
-            logger.warning(f"⚠️ SSL certificates not found, running without SSL")
+            raise SystemExit(
+                f"SSL enabled but certs not found at {cert_path}. "
+                f"Set debug=True to allow plain HTTP, or provision certs."
+            )
     
     uvicorn.run(
         "main:app",

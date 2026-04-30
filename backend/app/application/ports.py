@@ -4,7 +4,7 @@ These define the contracts that infrastructure adapters must implement.
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Tuple
+from typing import Any, List, Optional, Dict, Tuple
 from datetime import datetime
 import numpy as np
 from numpy.typing import NDArray
@@ -215,6 +215,3 @@ class ConfigurationRepository(ABC):
     def get_list(self, key: str, default: Optional[List] = None) -> List:
         """Get list configuration value."""
         pass
-
-
-from typing import Any

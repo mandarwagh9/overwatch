@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "overwatch"
+version = "2.0.0"
+description = "Multi-camera perception and tracking system"
+requires-python = ">=3.10,<3.13"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+addopts = "-q --strict-markers --tb=short"
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks integration tests"
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:numpy",
+]

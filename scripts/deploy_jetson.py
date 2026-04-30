@@ -11,19 +11,25 @@ Usage:
     python deploy_jetson.py --tensorrt   # Export TensorRT engine only
 """
 
-import paramiko
-import os
 import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _jetson_common import connect as _common_connect, get_credentials, run as _common_run
+
+import paramiko
 import time
 import argparse
+import secrets
 from pathlib import Path
 from typing import Optional, Tuple
 
-# Configuration
-JETSON_HOST = "192.168.1.10"
-JETSON_USER = "mandar"
-JETSON_PASS = "mandar"
+# Configuration (defaults; overridden by JETSON_* env vars at runtime)
+JETSON_HOST = os.environ.get("JETSON_HOST", "192.168.1.10")
+JETSON_USER = os.environ.get("JETSON_USER", "mandar")
 REMOTE_DIR = "/home/mandar/overwatch"
+STAGING_SUFFIX = ".new"
+BACKUP_SUFFIX = ".bak"
 
 # Local project root
 LOCAL_PROJECT = Path(__file__).parent.parent.resolve()
@@ -52,28 +58,22 @@ SKIP_FILES = {".env", "*.pyc", "*.pyo"}
 
 
 class JetsonDeployer:
-    def __init__(self, host: str, user: str, password: str):
-        self.host = host
-        self.user = user
-        self.password = password
+    def __init__(self, creds: Optional[dict] = None):
+        if creds is None:
+            creds = get_credentials()
+        self.creds = creds
+        self.host = creds["host"]
+        self.user = creds["user"]
         self.client: Optional[paramiko.SSHClient] = None
         self.sftp = None
-        
+
     def connect(self) -> None:
         """Establish SSH connection to Jetson."""
         print(f"\n{'='*60}")
         print(f"🔌 Connecting to {self.user}@{self.host}...")
         print(f"{'='*60}")
-        
-        self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.client.connect(
-            self.host, 
-            username=self.user, 
-            password=self.password, 
-            timeout=30,
-            banner_timeout=30
-        )
+
+        self.client = _common_connect(self.creds)
         print("✅ SSH connected!")
         
     def disconnect(self) -> None:
@@ -145,24 +145,33 @@ class JetsonDeployer:
         
         return info
     
+    @property
+    def staging_dir(self) -> str:
+        return f"{REMOTE_DIR}{STAGING_SUFFIX}"
+
+    @property
+    def backup_dir(self) -> str:
+        return f"{REMOTE_DIR}{BACKUP_SUFFIX}"
+
     def upload_files(self) -> int:
-        """Upload project files to Jetson via SFTP."""
-        print(f"\n📦 Uploading project files to {REMOTE_DIR}...")
-        
+        """Upload project files to Jetson via SFTP into a staging directory."""
+        print(f"\n📦 Uploading project files to {self.staging_dir} (staging)...")
+
         self.sftp = self.client.open_sftp()
-        
-        # Ensure remote directory exists
-        self.run(f"mkdir -p {REMOTE_DIR}", quiet=True)
-        
+
+        # Reset staging dir then create it
+        self.run(f"rm -rf {self.staging_dir}", quiet=True)
+        self.run(f"mkdir -p {self.staging_dir}", quiet=True)
+
         uploaded = 0
-        
+
         for pattern in UPLOAD_PATTERNS:
             local_path = LOCAL_PROJECT / pattern
-            
+
             if not local_path.exists():
                 print(f"  ⚠️  Skipping (not found): {pattern}")
                 continue
-            
+
             if local_path.is_file():
                 # Get relative path from LOCAL_PROJECT
                 rel = os.path.relpath(local_path, LOCAL_PROJECT).replace('\\', '/')
@@ -171,11 +180,26 @@ class JetsonDeployer:
             else:
                 # Directory
                 uploaded += self._upload_directory(local_path, pattern)
-        
+
         self.sftp.close()
-        print(f"  ✅ {uploaded} files uploaded")
-        
+        print(f"  ✅ {uploaded} files uploaded to staging")
+
         return uploaded
+
+    def swap_staging(self) -> None:
+        """Atomically swap staging dir to REMOTE_DIR, keeping previous as backup."""
+        print(f"\n🔄 Swapping {self.staging_dir} -> {REMOTE_DIR}")
+        # Drop any prior backup
+        _common_run(self.client, f"rm -rf {self.backup_dir}", check=False)
+        # Move current (if present) aside as backup
+        _common_run(
+            self.client,
+            f"if [ -d {REMOTE_DIR} ]; then mv {REMOTE_DIR} {self.backup_dir}; fi",
+            check=False,
+        )
+        # Promote staging
+        _common_run(self.client, f"mv {self.staging_dir} {REMOTE_DIR}")
+        print(f"  ✅ Backup of previous version: {self.backup_dir}")
     
     def _ensure_remote_dir(self, remote_path: str) -> None:
         """Ensure remote directory exists."""
@@ -191,25 +215,25 @@ class JetsonDeployer:
                     pass
     
     def _upload_file(self, local_path: Path, remote_rel: str) -> None:
-        """Upload a single file."""
-        remote_path = f"{REMOTE_DIR}/{remote_rel}"
+        """Upload a single file (into staging dir)."""
+        remote_path = f"{self.staging_dir}/{remote_rel}"
         try:
             self._ensure_remote_dir(os.path.dirname(remote_path))
             self.sftp.put(str(local_path), remote_path)
             print(f"    ✅ {remote_rel}")
         except Exception as e:
             print(f"    ❌ {remote_rel}: {e}")
-    
+
     def _upload_directory(self, local_dir: Path, pattern: str) -> int:
-        """Upload a directory recursively."""
+        """Upload a directory recursively (into staging dir)."""
         uploaded = 0
-        
+
         for root, dirs, files in os.walk(local_dir):
             # Filter skip dirs
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-            
+
             rel = os.path.relpath(root, LOCAL_PROJECT).replace('\\', '/')
-            remote_base = f"{REMOTE_DIR}/{rel}"
+            remote_base = f"{self.staging_dir}/{rel}"
             
             # Ensure remote dir
             try:
@@ -312,9 +336,10 @@ class JetsonDeployer:
     def create_env(self, model_path: str, has_cuda: bool) -> None:
         """Create/update .env configuration file."""
         print("\n📝 Creating backend configuration...")
-        
+
         half = "true" if has_cuda and "engine" in model_path else "false"
-        
+        jwt_secret = secrets.token_urlsafe(48)
+
         env_content = f"""# Overwatch Jetson Configuration
 # Generated by deploy_jetson.py
 
@@ -344,10 +369,15 @@ PORT=8000
 SSL_ENABLED=true
 SSL_CERTFILE=certs/cert.pem
 SSL_KEYFILE=certs/key.pem
+
+# Auth (per-deploy secret; flip AUTH_ENABLED=true to enforce)
+JWT_SECRET={jwt_secret}
+AUTH_ENABLED=false
 """
-        
+
         self.run(f"cat > {REMOTE_DIR}/backend/.env << 'ENVEOF'\n{env_content}ENVEOF", quiet=True)
-        print("  ✅ Configuration created")
+        self.run(f"chmod 600 {REMOTE_DIR}/backend/.env", quiet=True)
+        print("  ✅ Configuration created (chmod 600, fresh JWT_SECRET)")
     
     def start_backend(self) -> bool:
         """Start the Overwatch backend."""
@@ -406,10 +436,11 @@ SSL_KEYFILE=certs/key.pem
             elif local_model:
                 print("\n📦 Local YOLO model found - will upload")
             
-            # Upload files
+            # Upload files (atomic-staging swap)
             if not tensorrt_only:
                 self.upload_files()
-                
+                self.swap_staging()
+
                 # Install dependencies
                 if not update_only:
                     self.install_dependencies()
@@ -430,26 +461,51 @@ SSL_KEYFILE=certs/key.pem
 
 def main():
     parser = argparse.ArgumentParser(description="Deploy Overwatch to Jetson")
-    parser.add_argument("--update", action="store_true", 
+    parser.add_argument("--update", action="store_true",
                         help="Incremental update (skip dependency install)")
     parser.add_argument("--tensorrt", action="store_true",
                         help="Export TensorRT engine only")
-    parser.add_argument("--host", default=JETSON_HOST,
-                        help=f"Jetson IP address (default: {JETSON_HOST})")
+    parser.add_argument("--host", default=None,
+                        help=f"Jetson IP address (overrides JETSON_HOST env; default: {JETSON_HOST})")
+    parser.add_argument("--rollback", action="store_true",
+                        help="Swap backup back to current and exit")
     args = parser.parse_args()
-    
+
     # Set UTF-8 encoding for Windows compatibility
-    import sys
     if sys.platform == 'win32':
         import codecs
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
-    
+
+    # Allow --host CLI override of env-driven default
+    if args.host:
+        os.environ["JETSON_HOST"] = args.host
+
+    creds = get_credentials()
+
     print(f"\n{'#'*60}")
     print(f"# OVERWATCH -> JETSON DEPLOYMENT")
-    print(f"# Target: {args.host}")
+    print(f"# Target: {creds['host']}")
     print(f"{'#'*60}")
-    
-    deployer = JetsonDeployer(args.host, JETSON_USER, JETSON_PASS)
+
+    deployer = JetsonDeployer(creds)
+
+    if args.rollback:
+        deployer.connect()
+        try:
+            print("Rolling back...")
+            _common_run(
+                deployer.client,
+                f"if [ ! -d {REMOTE_DIR}{BACKUP_SUFFIX} ]; then echo 'No backup to roll back to' >&2; exit 1; fi",
+            )
+            _common_run(deployer.client, f"rm -rf {REMOTE_DIR}{STAGING_SUFFIX}", check=False)
+            _common_run(deployer.client, f"mv {REMOTE_DIR} {REMOTE_DIR}{STAGING_SUFFIX}")
+            _common_run(deployer.client, f"mv {REMOTE_DIR}{BACKUP_SUFFIX} {REMOTE_DIR}")
+            _common_run(deployer.client, f"rm -rf {REMOTE_DIR}{STAGING_SUFFIX}", check=False)
+            print("Rolled back.")
+        finally:
+            deployer.disconnect()
+        sys.exit(0)
+
     deployer.deploy(update_only=args.update, tensorrt_only=args.tensorrt)
 
 

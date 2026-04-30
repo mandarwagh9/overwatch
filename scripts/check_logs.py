@@ -1,11 +1,16 @@
 """Check full Jetson logs + verify tracking mode."""
-import paramiko
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('192.168.1.8', username='mandar', password='mandar', timeout=15)
+from _jetson_common import connect, get_credentials, run
 
-def run(cmd):
+creds = get_credentials()
+print(f"Connecting to {creds['host']}...")
+c = connect(creds)
+
+
+def remote_run(cmd):
     print(f'> {cmd}')
     si, so, se = c.exec_command(cmd, timeout=30)
     o = so.read().decode('utf-8', errors='replace')
@@ -16,12 +21,12 @@ def run(cmd):
         print('ERR:', e.strip()[:500])
 
 print('=== FULL LOGS ===')
-run('cat /tmp/overwatch.log')
+remote_run('cat /tmp/overwatch.log')
 
 print('\n=== SCIPY CHECK ===')
-run('python3 -c "from scipy.optimize import linear_sum_assignment; print(\'scipy OK\')"')
+remote_run('python3 -c "from scipy.optimize import linear_sum_assignment; print(\'scipy OK\')"')
 
 print('\n=== PERCEPTION PIPELINE CHECK ===')
-run('python3 -c "import sys; sys.path.insert(0, \'/home/mandar/OVERWATCH/backend\'); from app.core.perception_pipeline import PerceptionPipeline; print(\'Pipeline import OK\')"')
+remote_run('python3 -c "import sys; sys.path.insert(0, \'/home/mandar/OVERWATCH/backend\'); from app.core.perception_pipeline import PerceptionPipeline; print(\'Pipeline import OK\')"')
 
 c.close()

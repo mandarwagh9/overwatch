@@ -1,8 +1,10 @@
+import os
 import sys
 import time
 import subprocess
 
-url = sys.argv[1] if len(sys.argv) > 1 else 'ws://192.168.1.8:8000/ws'
+JETSON_HOST = os.environ.get("JETSON_HOST", "192.168.1.10")
+url = sys.argv[1] if len(sys.argv) > 1 else f'ws://{JETSON_HOST}:8000/ws'
 max_msgs = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 
 # Ensure websocket-client
