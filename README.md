@@ -5,18 +5,24 @@
   <img src="https://img.shields.io/badge/TensorRT-FP16-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="TensorRT" />
   <img src="https://img.shields.io/badge/Jetson_Orin_Nano-Edge-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="Jetson" />
   <img src="https://github.com/mandarwagh9/overwatch/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" />
-  <img src="https://img.shields.io/badge/license-Proprietary-red?style=for-the-badge" alt="License" />
+  <img src="https://img.shields.io/badge/license-MIT-00ffc8?style=for-the-badge" alt="License: MIT" />
 </p>
 
 <h1 align="center">🎯 OVERWATCH</h1>
 
 <p align="center">
-  <strong>Real-time multi-camera collaborative perception system</strong><br/>
-  <em>Multi-camera tracking · AI-powered sensor fusion · Augmented reality overlays · Edge deployment</em>
+  <strong>An open, hackable take on connected-warfare-style perception — running on a $500 dev kit.</strong><br/>
+  <em>Multi-sensor fusion · Cross-camera tracking · Tactical AR HUD · Edge inference on Jetson Orin Nano</em>
+</p>
+
+<p align="center">
+  Inspired by <a href="https://www.anduril.com/connected-warfare">Anduril Connected Warfare</a> &amp; the Lattice OS concept —<br/>
+  built as a community reference implementation, not affiliated with Anduril Industries.
 </p>
 
 <p align="center">
   <a href="#demo-video">Demo</a> ·
+  <a href="#-inspiration--scope">Inspiration</a> ·
   <a href="#-features">Features</a> ·
   <a href="#-architecture">Architecture</a> ·
   <a href="#-quick-start">Quick Start</a> ·
@@ -31,6 +37,38 @@
 ## Demo Video
 
 [Watch on YouTube](https://youtu.be/L_jDzPQBXO8) — prototype iteration 1.
+
+---
+
+## 🛰️ Inspiration & scope
+
+OVERWATCH is a **publicly-available reference implementation** of the multi-sensor situational-awareness concept popularised by [Anduril's Connected Warfare](https://www.anduril.com/connected-warfare) and its **Lattice** software platform — the idea that a network of low-cost, heterogeneous sensors can be fused at the edge into a single, AI-driven view of the battlespace.
+
+This project takes that idea and runs with it on commodity hardware:
+
+- A **$500 NVIDIA Jetson Orin Nano** instead of a hardened tactical server
+- **IP webcams + mobile phone cameras** instead of dedicated military-grade sensors
+- **YOLOv8 + Kalman + homography** instead of classified perception stacks
+- **A FastAPI/React stack** instead of proprietary tactical software
+
+The visual language — diamond IFF markers, compass ribbon, threat rings, ghost predictions — is **inspired by Anduril's EagleEye HUD aesthetic** (one of the publicly-shown UI surfaces of Lattice). It is *not* a clone, *not* affiliated with or endorsed by Anduril Industries, and *not* a substitute for their products. Trademarks belong to their respective owners.
+
+> **Scope honesty:** this is a research/educational project. It demonstrates the *principles* of connected sensing — sensor fusion, cross-camera re-ID, edge inference, real-time broadcast — at a scale that fits in a backpack. It is not military-grade, not C2-system-grade, and not certified for any operational use.
+
+### What's the same idea, what's different
+
+| | Anduril Lattice / Connected Warfare | OVERWATCH (this repo) |
+|---|---|---|
+| **Goal** | Unified situational awareness across heterogeneous sensors | Same — at hobbyist scale |
+| **Sensor mix** | Cameras, radar, RF, sonar, drones, ground vehicles, … | IP cameras + phone cameras (extensible) |
+| **Fusion** | Proprietary, classified | Open: Kalman + Hungarian + homography |
+| **Edge compute** | Hardened tactical hardware | Jetson Orin Nano dev kit |
+| **HUD style** | EagleEye tactical UI | EagleEye-*inspired* canvas overlay |
+| **Autonomy** | Multi-asset autonomous teaming | Single-pipeline perception only |
+| **Use** | Defense / national security | Research, learning, civilian situational awareness |
+| **Source** | Closed | Public on GitHub (license: see [LICENSE](LICENSE)) |
+
+If you're building something in this space — researchers, students, civilian defense-tech tinkerers, public-safety folks — this repo is meant to be a starting point you can fork, hack on, and learn from.
 
 ---
 
@@ -379,9 +417,9 @@ Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }
 
 ---
 
-## 🎯 AR overlay system
+## 🎯 AR overlay system — EagleEye-inspired tactical HUD
 
-The frontend renders a tactical HUD with diamond markers, compass ribbon, and threat rings:
+The frontend renders a tactical HUD inspired by Anduril's EagleEye UI — diamond IFF markers, compass ribbon, threat rings — implemented entirely in HTML5 Canvas. (Visual style only; rendered from open code, no Anduril assets used.)
 
 | Layer | Color | Elements |
 |---|---|---|
@@ -676,14 +714,17 @@ The cross-camera homography system is built on established multi-view geometry p
 
 ---
 
-## 📄 License
+## 📄 License & trademarks
 
-This project is **proprietary software**. Copyright © 2024–2026 Mandar Wagh. All rights reserved.
+OVERWATCH is released under the **[MIT License](LICENSE)** — copyright © 2024–2026 Mandar Wagh. You're free to use, copy, modify, merge, publish, distribute, sublicense, and sell copies of the software, subject to the conditions in the license file. If you build something cool with it, a link back is appreciated but not required.
 
-Unauthorized use, copying, modification, or distribution is strictly prohibited. See [LICENSE](LICENSE) for full terms.
+**"Anduril," "Lattice," "Connected Warfare," and "EagleEye"** are trademarks of Anduril Industries, Inc. This project is an independent community implementation **inspired by publicly-shown concepts** of those products. It is not affiliated with, endorsed by, or sponsored by Anduril Industries. No proprietary information, code, or assets from Anduril are used.
+
+All other third-party trademarks (NVIDIA, Jetson, TensorRT, React, FastAPI, etc.) belong to their respective owners.
 
 ---
 
 <p align="center">
-  <strong>Built for connected situational awareness</strong> 🎯
+  <strong>Connected sensing, at hackathon scale.</strong> 🎯<br/>
+  <em>Inspired by <a href="https://www.anduril.com/connected-warfare">Anduril Connected Warfare</a> · Built on open tools.</em>
 </p>

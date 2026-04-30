@@ -1,26 +1,21 @@
-PROPRIETARY SOFTWARE LICENSE
+MIT License
 
-Copyright (c) 2024-2026 Mandar Wagh. All Rights Reserved.
+Copyright (c) 2024-2026 Mandar Wagh
 
-This software and associated documentation files (the "Software") are the
-exclusive property of Mandar Wagh. The Software is protected by copyright
-laws and international treaty provisions.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-RESTRICTIONS:
-  1. You may NOT use, copy, modify, merge, publish, distribute, sublicense,
-     and/or sell copies of the Software without prior written permission from
-     the copyright holder.
-  2. You may NOT reverse engineer, decompile, or disassemble the Software.
-  3. You may NOT create derivative works based on the Software.
-  4. You may NOT remove or alter any proprietary notices, labels, or marks
-     on the Software.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
-OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-For licensing inquiries, contact: Mandar Wagh
