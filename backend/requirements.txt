@@ -1,28 +1,28 @@
 # Core FastAPI and web framework
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-websockets>=12.0
+fastapi>=0.104.0,<0.120.0
+uvicorn[standard]>=0.24.0,<0.32.0
+websockets>=12.0,<14.0
 
 # Computer Vision and ML
-opencv-python>=4.8.0
-ultralytics>=8.0.200
-numpy>=1.24.0
-torch>=2.1.0
-torchvision>=0.16.0
+opencv-python>=4.8.0,<5.0.0
+ultralytics>=8.0.200,<9.0.0
+numpy>=1.24.0,<2.0.0
+torch>=2.1.0,<3.0.0
+torchvision>=0.16.0,<1.0.0
 
 # Data processing and serialization
-msgpack>=1.0.7
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-scipy>=1.11.0
-PyJWT>=2.8.0
+msgpack>=1.0.7,<2.0.0
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
+scipy>=1.11.0,<2.0.0
+PyJWT>=2.8.0,<3.0.0
 
 # Utilities
-python-multipart>=0.0.6
-python-dotenv>=1.0.0
+python-multipart>=0.0.18
+python-dotenv>=1.0.0,<2.0.0
 
 # Development
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-black>=23.0.0
-mypy>=1.7.0
+pytest>=7.4.0,<9.0.0
+pytest-asyncio>=0.21.0,<1.0.0
+black>=23.0.0,<25.0.0
+mypy>=1.7.0,<2.0.0
