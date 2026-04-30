@@ -247,7 +247,9 @@ async def camera_websocket_endpoint(websocket: WebSocket):
     import json
     
     await websocket.accept()
-    
+
+    camera_id: Optional[int] = None
+
     try:
         # Wait for registration message
         message = await websocket.receive_text()
@@ -335,17 +337,11 @@ async def camera_websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"Camera {camera_id}: Error in receive loop: {e}")
                 break
-                        
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"Camera {camera_id} error: {e}")
-                break
         
     except Exception as e:
         logger.error(f"Camera WebSocket error: {e}")
     finally:
-        if 'camera_id' in locals():
+        if camera_id is not None:
             container.camera_service.unregister_virtual_camera(camera_id)
             logger.info(f"Mobile camera unregistered: {camera_id}")
 
