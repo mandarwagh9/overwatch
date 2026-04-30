@@ -142,23 +142,52 @@ class CameraCapture:
         logger.info(f"Camera {self.camera_id} stopped")
     
     def _capture_loop(self) -> None:
-        """Main capture loop running in separate thread."""
+        """Main capture loop running in separate thread.
+
+        Reconnects ``cv2.VideoCapture`` with exponential backoff after
+        persistent read failures (e.g. RTSP stream drops).
+        """
         frame_times: List[float] = []
-        
-        while self._is_running and self._cap and self._cap.isOpened():
+        consecutive_failures = 0
+        reconnect_threshold = 30  # ~3s at 100ms sleep
+        backoff = 1.0
+        max_backoff = 30.0
+
+        while self._is_running:
             try:
+                if self._cap is None or not self._cap.isOpened():
+                    self._reconnect(backoff)
+                    backoff = min(backoff * 2, max_backoff)
+                    consecutive_failures = 0
+                    continue
+
                 loop_start = time.time()
-                
+
                 ret, frame = self._cap.read()
                 if not ret:
-                    logger.warning(f"Camera {self.camera_id}: Failed to read frame")
-                    time.sleep(0.1)
+                    consecutive_failures += 1
+                    if consecutive_failures >= reconnect_threshold:
+                        logger.warning(
+                            f"Camera {self.camera_id}: {consecutive_failures} consecutive "
+                            f"read failures, reconnecting"
+                        )
+                        try:
+                            self._cap.release()
+                        except Exception:
+                            pass
+                        self._cap = None
+                        consecutive_failures = 0
+                    else:
+                        time.sleep(0.1)
                     continue
-                
+
+                consecutive_failures = 0
+                backoff = 1.0
+
                 # Resize if needed
                 if frame.shape[1] != self.target_width or frame.shape[0] != self.target_height:
                     frame = cv2.resize(frame, (self.target_width, self.target_height))
-                
+
                 # Create CameraFrame
                 camera_frame = CameraFrame(
                     camera_id=self.camera_id,
@@ -166,29 +195,55 @@ class CameraCapture:
                     timestamp=datetime.now(),
                     frame_number=self._buffer.frame_counter
                 )
-                
+
                 # Try to buffer the frame
                 if self._buffer.put(camera_frame):
                     self._frames_captured += 1
                 else:
                     self._frames_dropped += 1
-                
+
                 # Calculate FPS
                 frame_times.append(time.time())
                 if len(frame_times) > 30:
                     frame_times.pop(0)
                 if len(frame_times) > 1:
                     self._current_fps = len(frame_times) / (frame_times[-1] - frame_times[0])
-                
+
                 # Maintain target FPS
                 elapsed = time.time() - loop_start
                 sleep_time = max(0, self.frame_interval - elapsed)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                    
+
             except Exception as e:
                 logger.error(f"Camera {self.camera_id} capture error: {e}")
                 time.sleep(0.1)
+
+    def _reconnect(self, delay_s: float) -> None:
+        """Open VideoCapture with backoff."""
+        time.sleep(delay_s)
+        if not self._is_running:
+            return
+        try:
+            cap = cv2.VideoCapture(self.camera_url, cv2.CAP_FFMPEG)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(self.camera_url)
+            self._cap = cap
+            if self._cap.isOpened():
+                # Reapply capture configuration on reconnect
+                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.target_width)
+                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
+                logger.info(
+                    f"Camera {self.camera_id}: reconnected to {self.camera_url}"
+                )
+            else:
+                logger.warning(
+                    f"Camera {self.camera_id}: reconnect attempt failed"
+                )
+        except Exception as e:
+            logger.error(f"Camera {self.camera_id}: reconnect error: {e}")
     
     def get_latest_frame(self) -> Optional[CameraFrame]:
         """Get the latest frame from the buffer."""
