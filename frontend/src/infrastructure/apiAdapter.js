@@ -66,7 +66,8 @@ class ApiAdapter {
         method: 'GET',
         headers: {
           'Accept': 'application/json'
-        }
+        },
+        signal: AbortSignal.timeout(4000)
       });
 
       if (!response.ok) {
@@ -105,7 +106,8 @@ class ApiAdapter {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
-        }
+        },
+        signal: AbortSignal.timeout(4000)
       };
 
       if (body) {
