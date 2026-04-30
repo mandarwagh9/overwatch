@@ -5,7 +5,7 @@
   <img src="https://img.shields.io/badge/TensorRT-FP16-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="TensorRT" />
   <img src="https://img.shields.io/badge/Jetson_Orin_Nano-Edge-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="Jetson" />
   <img src="https://github.com/mandarwagh9/overwatch/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" />
-  <img src="https://img.shields.io/badge/source-publicly_available-00ffc8?style=for-the-badge" alt="Source" />
+  <img src="https://img.shields.io/badge/license-MIT-00ffc8?style=for-the-badge" alt="License: MIT" />
 </p>
 
 <h1 align="center">🎯 OVERWATCH</h1>
@@ -716,7 +716,7 @@ The cross-camera homography system is built on established multi-view geometry p
 
 ## 📄 License & trademarks
 
-The source for this project is **publicly available on GitHub** for research and educational purposes. The current [LICENSE](LICENSE) is **source-available, not OSI-approved open source** — copyright © 2024–2026 Mandar Wagh. If you'd like to use OVERWATCH commercially or relicense a fork under an OSI license (MIT/Apache-2.0/etc.), open an issue.
+OVERWATCH is released under the **[MIT License](LICENSE)** — copyright © 2024–2026 Mandar Wagh. You're free to use, copy, modify, merge, publish, distribute, sublicense, and sell copies of the software, subject to the conditions in the license file. If you build something cool with it, a link back is appreciated but not required.
 
 **"Anduril," "Lattice," "Connected Warfare," and "EagleEye"** are trademarks of Anduril Industries, Inc. This project is an independent community implementation **inspired by publicly-shown concepts** of those products. It is not affiliated with, endorsed by, or sponsored by Anduril Industries. No proprietary information, code, or assets from Anduril are used.
 
