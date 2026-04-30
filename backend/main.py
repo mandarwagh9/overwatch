@@ -378,8 +378,16 @@ if __name__ == "__main__":
             ssl_kwargs["ssl_certfile"] = cert_path
             ssl_kwargs["ssl_keyfile"] = key_path
             logger.info(f"🔒 SSL enabled")
+        elif settings.debug:
+            logger.warning(
+                f"⚠️ SSL certificates not found at {cert_path}, "
+                f"running without SSL (debug=True)"
+            )
         else:
-            logger.warning(f"⚠️ SSL certificates not found, running without SSL")
+            raise SystemExit(
+                f"SSL enabled but certs not found at {cert_path}. "
+                f"Set debug=True to allow plain HTTP, or provision certs."
+            )
     
     uvicorn.run(
         "main:app",
