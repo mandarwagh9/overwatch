@@ -31,7 +31,9 @@ class WebSocketAdapter {
     this.url = null;
     this.listeners = new Map();
     this.reconnectAttempts = 0;
-    
+    this._intentionalClose = false;
+    this._reconnectTimer = null;
+
     this.maxReconnectAttempts = getConfig('websocket.maxReconnectAttempts', 5);
     this.reconnectDelay = getConfig('websocket.reconnectDelay', 1000);
     
@@ -50,7 +52,13 @@ class WebSocketAdapter {
    */
   connect(url) {
     this.url = url || getWebSocketUrl();
-    
+    this._intentionalClose = false;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
+
     return new Promise((resolve, reject) => {
       try {
         this.socket = new WebSocket(this.url);
@@ -134,6 +142,7 @@ class WebSocketAdapter {
    * Attempt to reconnect
    */
   attemptReconnect() {
+    if (this._intentionalClose) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('[WebSocket] Max reconnection attempts reached');
       this.emit(WebSocketEvents.MAX_RECONNECT_REACHED);
@@ -142,10 +151,11 @@ class WebSocketAdapter {
 
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-    
+
     console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-    
-    setTimeout(() => {
+
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
       this.connect(this.url).catch(() => {
         // Reconnection failed, will try again
       });
@@ -196,10 +206,13 @@ class WebSocketAdapter {
    * Disconnect from server
    */
   disconnect() {
+    this._intentionalClose = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     if (this.socket) {
-      // Prevent reconnection on intentional close
-      this.reconnectAttempts = this.maxReconnectAttempts;
-      this.socket.close();
+      this.socket.close(1000, 'client disconnect');
       this.socket = null;
     }
   }
