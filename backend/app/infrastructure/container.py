@@ -68,19 +68,34 @@ class ApplicationContainer:
         logger.info("ApplicationContainer initialized")
     
     async def start(self) -> None:
-        """Start all services."""
+        """Start all services with rollback on partial failure."""
         logger.info("Starting application services...")
-        
-        # Start infrastructure
-        await self.camera_repo.start()
-        await self.detection_repo.initialize()
-        await self.tracking_repo.initialize()
-        await self.world_model_repo.initialize()
-        
-        # Start pipeline
-        await self.pipeline_service.start()
-        
-        logger.info("All services started")
+
+        started: list[tuple[str, object]] = []
+        try:
+            # Start infrastructure
+            await self.camera_repo.start()
+            started.append(("camera", self.camera_repo.stop))
+
+            await self.detection_repo.initialize()
+            await self.tracking_repo.initialize()
+            await self.world_model_repo.initialize()
+
+            # Start pipeline
+            await self.pipeline_service.start()
+            started.append(("pipeline", self.pipeline_service.stop))
+
+            logger.info("All services started")
+        except Exception:
+            logger.error("Container start failed; rolling back partial init")
+            for name, stop_fn in reversed(started):
+                try:
+                    res = stop_fn()
+                    if hasattr(res, "__await__"):
+                        await res
+                except Exception as exc:
+                    logger.error(f"Rollback of {name} failed: {exc}")
+            raise
     
     async def stop(self) -> None:
         """Stop all services."""
