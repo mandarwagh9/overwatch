@@ -87,33 +87,47 @@ class WebSocketCommunicationRepository(CommunicationRepository):
             return False
     
     async def broadcast_snapshot(self, snapshot: PerceptionSnapshot) -> None:
-        """Broadcast a perception snapshot to all connected clients."""
+        """Broadcast a perception snapshot to all connected clients.
+
+        Each client send is wrapped in a 2s timeout so a single slow
+        client cannot stall the broadcast for everyone else.
+        """
         if not self._clients:
-            logger.warning("No clients connected, skipping broadcast")
+            logger.debug("No clients connected, skipping broadcast")
             return
-        
-        # Serialize snapshot
-        data = self._serialize_snapshot(snapshot)
-        
-        # Debug: Log snapshot being broadcast
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"📡 Broadcasting snapshot gen={snapshot.generation}, "
-                    f"cameras={len(snapshot.camera_frames)}, "
-                    f"clients={len(self._clients)}, "
-                    f"data_size={len(data)} bytes")
-        
-        # Send to all clients concurrently
-        tasks = [
-            self.send_to_client(client_id, data)
-            for client_id in list(self._clients.keys())
-        ]
-        
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            failed = sum(1 for r in results if isinstance(r, Exception))
-            if failed > 0:
-                logger.warning(f"Failed to send snapshot to {failed} clients")
+
+        payload = self._serialize_snapshot(snapshot)
+        client_ids = list(self._clients.keys())
+
+        logger.debug(
+            f"Broadcasting snapshot gen={snapshot.generation}, "
+            f"cameras={len(snapshot.camera_frames)}, "
+            f"clients={len(client_ids)}, "
+            f"data_size={len(payload)} bytes"
+        )
+
+        async def _send_with_timeout(cid: str) -> None:
+            client = self._clients.get(cid)
+            if client is None:
+                return
+            try:
+                await asyncio.wait_for(client.websocket.send_bytes(payload), timeout=2.0)
+                client.messages_sent += 1
+                client.bytes_sent += len(payload)
+                client.last_activity = datetime.now()
+            except asyncio.TimeoutError:
+                logger.warning(f"Client {cid} send timed out; disconnecting")
+                self.disconnect(cid)
+            except Exception as e:
+                logger.warning(
+                    f"Client {cid} send failed ({type(e).__name__}); disconnecting"
+                )
+                self.disconnect(cid)
+
+        await asyncio.gather(
+            *(_send_with_timeout(cid) for cid in client_ids),
+            return_exceptions=True,
+        )
     
     def get_client_count(self) -> int:
         """Get number of connected clients."""
