@@ -358,15 +358,15 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         # Update Kalman filter
         if object_id in self._kalman_filters:
             kf = self._kalman_filters[object_id]
-            dt = (timestamp - obj.last_update).total_seconds()
+            dt = max(0.0, (timestamp - obj.last_update).total_seconds())
             kf.predict(dt)
             kf.update(world_pos, confidence=track.confidence)
-            
+
             obj.position = kf.position
             obj.velocity = kf.velocity
         else:
             # Fallback without KF
-            dt = (timestamp - obj.last_update).total_seconds()
+            dt = max(0.0, (timestamp - obj.last_update).total_seconds())
             if dt > 0:
                 velocity = Velocity3D(
                     (world_pos.x - obj.position.x) / dt,

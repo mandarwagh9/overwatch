@@ -66,11 +66,17 @@ def test_predict_future_does_not_mutate_state():
     assert future.x == pytest.approx(2.0)
 
 
-def test_negative_dt_currently_produces_finite_covariance():
-    """LOCKS CURRENT BUG: negative dt produces non-PSD covariance.
-    Task 2.1 will tighten this to assert PSD after clamp."""
+def test_predict_zero_dt_keeps_covariance_psd():
+    """After Task 2.1: callers clamp dt>=0 before predict, so KF only sees dt>=0."""
     kf = KalmanFilter()
-    kf.predict(-1.0)
-    np.testing.assert_allclose(kf.covariance, kf.covariance.T, atol=1e-9)
+    kf.predict(0.0)
     eigvals = np.linalg.eigvalsh(kf.covariance)
-    assert np.all(np.isfinite(eigvals))
+    assert np.all(eigvals >= -1e-9)
+
+
+def test_predict_positive_dt_keeps_covariance_psd():
+    kf = KalmanFilter()
+    for _ in range(10):
+        kf.predict(0.1)
+    eigvals = np.linalg.eigvalsh(kf.covariance)
+    assert np.all(eigvals >= -1e-9)
