@@ -206,7 +206,9 @@ class WorldObject:
     camera_pixel_positions: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     camera_pixel_velocities: Dict[int, Tuple[float, float]] = field(default_factory=dict)
     camera_last_seen: Dict[int, datetime] = field(default_factory=dict)
-    
+    # Bottom-center (foot) pixel point per camera, for cross-camera homography
+    camera_foot_points: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+
     @property
     def time_since_update(self) -> float:
         return (datetime.now() - self.last_update).total_seconds()

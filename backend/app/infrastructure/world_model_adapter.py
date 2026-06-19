@@ -16,6 +16,7 @@ from app.domain.entities import (
     Track, WorldObject, PredictedTarget, CameraCalibration,
     Point3D, Velocity3D, BoundingBox, PredictionMethod, AppearanceDescriptor
 )
+from app.infrastructure.homography import HomographyEstimator
 
 
 logger = logging.getLogger(__name__)
@@ -258,6 +259,13 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         )
         self._appearance_ema_alpha = 0.3
 
+        # Cross-camera homography (Path A green H-PROJ ghost predictions)
+        self._homography = HomographyEstimator(
+            min_pairs=config_repo.get_int("homography_min_pairs", 4),
+            max_pairs=config_repo.get_int("homography_max_pairs", 100),
+            ransac_threshold=config_repo.get_float("homography_ransac_threshold", 12.0),
+        )
+
         # Initialize default calibrations if positions provided
         self._init_default_calibrations()
         
@@ -334,7 +342,10 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         for camera_id, camera_tracks in tracks.items():
             for track in camera_tracks:
                 await self._process_track(camera_id, track, now)
-        
+
+        # Feed cross-camera homography from objects co-visible this tick
+        self._collect_correspondences(now)
+
         # Clean up old objects
         self._cleanup_old_objects(now)
         
@@ -437,6 +448,7 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         obj.camera_pixel_positions[track.camera_id] = track.bbox.center
         obj.camera_pixel_velocities[track.camera_id] = track.velocity
         obj.camera_last_seen[track.camera_id] = timestamp
+        obj.camera_foot_points[track.camera_id] = (track.bbox.center[0], track.bbox.y2)
 
         # EMA-smooth the appearance descriptor for re-ID stability
         obj.appearance = self._blend_appearance(obj.appearance, track.appearance)
@@ -465,7 +477,8 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             source_tracks={track.camera_id: track.track_id},
             camera_pixel_positions={track.camera_id: track.bbox.center},
             camera_pixel_velocities={track.camera_id: track.velocity},
-            camera_last_seen={track.camera_id: timestamp}
+            camera_last_seen={track.camera_id: timestamp},
+            camera_foot_points={track.camera_id: (track.bbox.center[0], track.bbox.y2)},
         )
         
         self._world_objects[object_id] = obj
@@ -557,7 +570,70 @@ class WorldModelRepositoryImpl(WorldModelRepository):
     def get_world_objects(self) -> List[WorldObject]:
         """Get all current world objects."""
         return list(self._world_objects.values())
-    
+
+    def _collect_correspondences(self, now: datetime) -> None:
+        """Feed foot-point correspondences for objects co-visible on this tick.
+
+        An object seen by two cameras at the same instant gives one matched
+        ground-plane point per camera pair, which the homography estimator uses
+        to self-calibrate the camera-to-camera transform.
+        """
+        for obj in self._world_objects.values():
+            cams = [
+                c for c, seen in obj.camera_last_seen.items()
+                if seen == now and c in obj.camera_foot_points
+            ]
+            if len(cams) < 2:
+                continue
+            for src in cams:
+                for dst in cams:
+                    if src == dst:
+                        continue
+                    self._homography.add_correspondence(
+                        src, dst,
+                        obj.camera_foot_points[src],
+                        obj.camera_foot_points[dst],
+                    )
+
+    def _try_homography_prediction(
+        self, camera_id: int, obj: WorldObject, time_since_seen: float
+    ) -> Optional[PredictedTarget]:
+        """Project ``obj``'s foot point from a source camera into ``camera_id`` via
+        a learned homography. Returns a HOMOGRAPHY prediction, or None if no usable
+        homography/foot-point exists (caller then falls back to world projection)."""
+        for src_cam in self._homography.source_cameras_for(camera_id):
+            foot = obj.camera_foot_points.get(src_cam)
+            if foot is None:
+                continue
+            projected = self._homography.project(src_cam, camera_id, foot)
+            if projected is None:
+                continue
+
+            depth = max(abs(obj.position.z), 0.5)
+            bbox_height = min(500, max(50, 500 / depth))
+            bbox_width = bbox_height * 0.4
+            fx, fy = projected
+            try:
+                # Foot point is the bottom-centre; the body extends upward.
+                bbox = BoundingBox(fx - bbox_width / 2, fy - bbox_height, fx + bbox_width / 2, fy)
+            except ValueError:
+                continue
+
+            confidence = obj.confidence * max(
+                0.1, 1.0 - time_since_seen / self._prediction_horizon
+            )
+            return PredictedTarget(
+                object_id=obj.object_id,
+                camera_id=camera_id,
+                predicted_bbox=bbox,
+                confidence=confidence,
+                time_since_seen=time_since_seen,
+                velocity_projection=(obj.velocity.vx, obj.velocity.vy),
+                source_camera=src_cam,
+                prediction_method=PredictionMethod.HOMOGRAPHY,
+            )
+        return None
+
     def generate_predictions(self, camera_id: int) -> List[PredictedTarget]:
         """Generate predictions for a camera view."""
         # A view-only camera still needs a calibration to project world objects.
@@ -574,8 +650,16 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             time_since_seen = (now - obj.last_update).total_seconds()
             if time_since_seen > self._prediction_horizon:
                 continue
-            
-            # Try world-to-pixel projection
+
+            # Path A: cross-camera homography (green H-PROJ) — most accurate.
+            homography_pred = self._try_homography_prediction(
+                camera_id, obj, time_since_seen
+            )
+            if homography_pred is not None:
+                predictions.append(homography_pred)
+                continue
+
+            # Path C: world-to-pixel projection (orange WORLD) — always-available fallback.
             pixel = self._transformer.world_to_pixel(camera_id, obj.position)
             
             if pixel is None:
