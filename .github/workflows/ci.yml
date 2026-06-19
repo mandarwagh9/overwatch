@@ -28,7 +28,7 @@ jobs:
       - name: Unit tests + coverage
         run: |
           python -m pytest backend/tests/unit -q \
-            --cov=app --cov-report=term-missing --cov-fail-under=50
+            --cov=app --cov-report=term-missing --cov-fail-under=60
         env:
           PYTHONPATH: backend
 
