@@ -245,7 +245,13 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         self._person_height = config_repo.get_float("person_height_meters", 1.7)
         self._max_age = config_repo.get_float("world_object_max_age_seconds", 5.0)
         self._prediction_horizon = config_repo.get_float("prediction_horizon_seconds", 5.0)
-        
+
+        # Default calibration (used when CAMERA_POSITIONS is not configured)
+        self._default_focal_length = 800.0
+        self._default_camera_height = 2.5
+        self._default_camera_spacing = 3.0
+        self._warned_default_calibration = False
+
         # Initialize default calibrations if positions provided
         self._init_default_calibrations()
         
@@ -274,7 +280,43 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             )
             self._transformer.set_calibration(calibration)
             logger.info(f"Camera {i} calibrated at position ({pos[0]}, {pos[1]}, {pos[2]})")
-    
+
+    def _ensure_calibration(self, camera_id: int) -> None:
+        """Ensure ``camera_id`` has a calibration, synthesizing a default if not.
+
+        Without ``CAMERA_POSITIONS`` the world model would otherwise produce no
+        world objects or predictions at all (``pixel_to_world`` returns ``None``
+        for an uncalibrated camera). The default spreads cameras along the x-axis
+        so multi-camera setups stay distinct; set ``CAMERA_POSITIONS`` for accuracy.
+        """
+        if camera_id in self._transformer._calibrations:
+            return
+
+        if not self._warned_default_calibration:
+            logger.warning(
+                "No CAMERA_POSITIONS configured; using auto-default camera "
+                "calibration. World coordinates are approximate — set "
+                "CAMERA_POSITIONS for accuracy."
+            )
+            self._warned_default_calibration = True
+
+        position = Point3D(
+            camera_id * self._default_camera_spacing, 0.0, self._default_camera_height
+        )
+        self._transformer.set_calibration(
+            CameraCalibration(
+                camera_id=camera_id,
+                position=position,
+                rotation=(0.0, 0.0, 0.0),
+                focal_length=self._default_focal_length,
+                image_center=(640.0, 360.0),
+            )
+        )
+        logger.info(
+            f"Camera {camera_id}: auto-default calibration at "
+            f"({position.x}, {position.y}, {position.z})"
+        )
+
     async def initialize(self) -> None:
         """Initialize the world model."""
         logger.info("World model initialized")
@@ -302,6 +344,10 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         timestamp: datetime
     ) -> None:
         """Process a single track update."""
+        # Ensure the camera has a calibration (auto-default if unconfigured),
+        # otherwise pixel_to_world returns None and no world object is created.
+        self._ensure_calibration(camera_id)
+
         # Estimate depth from bbox height
         bbox_height = track.bbox.height
         if bbox_height > 20:
@@ -467,6 +513,9 @@ class WorldModelRepositoryImpl(WorldModelRepository):
     
     def generate_predictions(self, camera_id: int) -> List[PredictedTarget]:
         """Generate predictions for a camera view."""
+        # A view-only camera still needs a calibration to project world objects.
+        self._ensure_calibration(camera_id)
+
         predictions = []
         now = datetime.now()
         
