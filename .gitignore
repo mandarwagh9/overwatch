@@ -59,3 +59,10 @@ Thumbs.db
 
 # SSL certificates (generate locally)
 certs/
+
+# Test / coverage / tooling caches
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

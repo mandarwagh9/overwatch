@@ -5,7 +5,7 @@ Provides a permanent solution with proper model management.
 from __future__ import annotations
 import asyncio
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -28,7 +28,7 @@ class YOLODetector:
     
     def __init__(self, config_repo: ConfigurationRepository):
         self._config = config_repo
-        self._model = None
+        self._model: Any = None
         self._model_path = config_repo.get("model_path", "yolov8n.pt")
         self._device = config_repo.get("device", "auto")
         self._half_precision = config_repo.get_bool("half_precision", False)
@@ -55,15 +55,18 @@ class YOLODetector:
         
         if self._YOLO is None:
             raise RuntimeError("Ultralytics YOLO not available")
-        
+        # Capture the narrowed (non-None) class before further calls so the
+        # closure below doesn't lose the type-narrowing.
+        yolo_cls = self._YOLO
+
         try:
             logger.info(f"Loading YOLO model: {self._model_path}")
-            
+
             # Load model in thread pool to avoid blocking
             loop = asyncio.get_running_loop()
             self._model = await loop.run_in_executor(
                 None,
-                lambda: self._YOLO(self._model_path, task='detect')
+                lambda: yolo_cls(self._model_path, task='detect')
             )
             
             # Setup device
@@ -108,7 +111,7 @@ class YOLODetector:
         
         try:
             # Build inference arguments
-            infer_kwargs = {
+            infer_kwargs: Dict[str, Any] = {
                 'conf': self._confidence_threshold,
                 'iou': self._iou_threshold,
                 'max_det': self._max_detections,
@@ -206,7 +209,8 @@ class DetectionRepositoryImpl(DetectionRepository):
         """Run detection on a single frame."""
         if not self._is_ready:
             raise RuntimeError("Detection engine not initialized")
-        
+        assert self._detector is not None  # guaranteed by _is_ready
+
         loop = asyncio.get_running_loop()
         detections = await loop.run_in_executor(
             self._executor,
@@ -227,10 +231,10 @@ class DetectionRepositoryImpl(DetectionRepository):
         
         tasks = [self.detect(frame) for frame in frames]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        detections_map = {}
+
+        detections_map: Dict[int, List[Detection]] = {}
         for frame, result in zip(frames, results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"Detection failed for camera {frame.camera_id}: {result}")
                 detections_map[frame.camera_id] = []
             else:

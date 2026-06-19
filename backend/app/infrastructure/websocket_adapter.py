@@ -5,12 +5,12 @@ Handles real-time client connections with msgpack serialization.
 from __future__ import annotations
 import asyncio
 import logging
-from typing import Dict, List, Optional, Set
-from dataclasses import dataclass, field
+from typing import Dict
+from dataclasses import dataclass
 from datetime import datetime
 
 import msgpack
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
 
 from app.application.ports import CommunicationRepository
 from app.domain.entities import PerceptionSnapshot, Detection, Track, WorldObject, PredictedTarget

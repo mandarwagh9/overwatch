@@ -83,15 +83,6 @@ function MobileCamera() {
     }
   }, []);
 
-  // Toggle start/stop
-  const handleToggle = useCallback(() => {
-    if (cameraStreamAdapter.isStreaming) {
-      handleStop();
-    } else {
-      handleStart();
-    }
-  }, [handleStart, handleStop]);
-
   const isStreaming = cameraStreamAdapter.isStreaming;
 
   return (

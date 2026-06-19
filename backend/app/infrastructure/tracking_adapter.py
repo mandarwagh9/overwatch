@@ -3,16 +3,14 @@ Tracking repository adapter.
 Implements Hungarian algorithm tracking without external dependencies.
 """
 from __future__ import annotations
-import asyncio
 import logging
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
-from collections import defaultdict
 
 import numpy as np
 
 from app.application.ports import TrackingRepository, ConfigurationRepository
-from app.domain.entities import Detection, Track, BoundingBox, TrackingState, AppearanceDescriptor
+from app.domain.entities import CameraFrame, Detection, Track, BoundingBox, TrackingState
 
 
 logger = logging.getLogger(__name__)
@@ -334,6 +332,3 @@ class TrackingRepositoryImpl(TrackingRepository):
             cam_id: list(tracker.tracks.values())
             for cam_id, tracker in self._camera_trackers.items()
         }
-
-
-from app.domain.entities import CameraFrame

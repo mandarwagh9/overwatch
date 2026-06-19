@@ -4,8 +4,8 @@ Manages application dependencies and their lifecycle.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Optional
 import logging
+from typing import Any, Callable
 
 from app.application.ports import (
     ConfigurationRepository, CameraRepository, DetectionRepository,
@@ -71,7 +71,7 @@ class ApplicationContainer:
         """Start all services with rollback on partial failure."""
         logger.info("Starting application services...")
 
-        started: list[tuple[str, object]] = []
+        started: list[tuple[str, Callable[[], Any]]] = []
         try:
             # Start infrastructure
             await self.camera_repo.start()

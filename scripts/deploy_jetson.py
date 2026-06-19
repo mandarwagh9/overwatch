@@ -211,7 +211,7 @@ class JetsonDeployer:
             except FileNotFoundError:
                 try:
                     self.sftp.mkdir(path)
-                except:
+                except Exception:
                     pass
     
     def _upload_file(self, local_path: Path, remote_rel: str) -> None:
@@ -238,7 +238,7 @@ class JetsonDeployer:
             # Ensure remote dir
             try:
                 self._ensure_remote_dir(remote_base)
-            except:
+            except Exception:
                 pass
             
             for f in files:
@@ -264,9 +264,7 @@ class JetsonDeployer:
     def install_dependencies(self) -> None:
         """Install Python dependencies on Jetson."""
         print("\n📦 Installing dependencies...")
-        
-        req_file = f"{REMOTE_DIR}/backend/requirements-jetson.txt"
-        
+
         out, err, rc = self.run(
             f"cd {REMOTE_DIR}/backend && "
             f"pip3 install -r requirements-jetson.txt --break-system-packages 2>&1 | tail -20",
@@ -483,7 +481,7 @@ def main():
     creds = get_credentials()
 
     print(f"\n{'#'*60}")
-    print(f"# OVERWATCH -> JETSON DEPLOYMENT")
+    print("# OVERWATCH -> JETSON DEPLOYMENT")
     print(f"# Target: {creds['host']}")
     print(f"{'#'*60}")
 

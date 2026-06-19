@@ -3,7 +3,7 @@
  * Main monitoring interface with camera grid and statistics
  */
 
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useWebSocket, useCameraData, useCameraControl, useSystemStats } from '../application/hooks';
 import { WebSocketEvents } from '../infrastructure/websocketAdapter';
 import { getConfig } from '../config';

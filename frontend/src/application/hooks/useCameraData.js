@@ -5,7 +5,6 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { getConfig } from '../../config';
-import { WebSocketEvents } from '../../infrastructure/websocketAdapter';
 
 /**
  * Initial camera data structure

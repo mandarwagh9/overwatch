@@ -3,7 +3,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _jetson_common import connect, get_credentials, run
+from _jetson_common import connect, get_credentials
 
 import json
 
@@ -31,7 +31,7 @@ o, e = remote_run('curl -sk https://localhost:8000/')
 try:
     data = json.loads(o)
     print(json.dumps(data, indent=2))
-except:
+except Exception:
     print(o)
 
 # Check active connections (rough proxy)

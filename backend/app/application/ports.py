@@ -4,14 +4,13 @@ These define the contracts that infrastructure adapters must implement.
 """
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional, Dict, Tuple
-from datetime import datetime
+from typing import Any, List, Optional, Dict
 import numpy as np
 from numpy.typing import NDArray
 
 from app.domain.entities import (
     CameraFrame, Detection, Track, WorldObject, PredictedTarget,
-    CameraCalibration, BoundingBox, Point3D, AppearanceDescriptor
+    CameraCalibration, BoundingBox, AppearanceDescriptor, PerceptionSnapshot
 )
 
 
