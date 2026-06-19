@@ -101,7 +101,7 @@ that describe them are forward-looking design.
 | Mobile phone camera source + standalone page | ✅ Implemented |
 | Optional JWT auth · SSL · atomic Jetson deploy | ✅ Implemented |
 | Cross-camera homography ghosts (green `H-PROJ`) | ✅ Implemented |
-| Pixel-extrapolation ghosts (red `EXTRAP`) | 🔭 Planned |
+| Pixel-extrapolation ghosts (red `EXTRAP`) | ✅ Implemented |
 | Appearance re-ID (HSV histograms) wired into tracking / fusion | ✅ Implemented |
 | Sensor-trust scoring | 🔭 Planned |
 | Adaptive Kalman noise by bbox area | 🔭 Planned |
@@ -128,7 +128,7 @@ that describe them are forward-looking design.
 | **Cross-camera re-ID** | 64-dim HSV histogram descriptors, L2-normalized, EMA-smoothed (α = 0.3); computed per detection and used to gate cross-camera association |
 | **Sensor trust scoring** 🔭 | *Planned* — per-sensor trust ∈ [0.1, 1.0]; the Kalman update accepts the param but it is fixed at 1.0 today |
 | **Cross-camera homography** | Self-calibrating ground-plane H from shared foot-point observations via `cv2.findHomography` + RANSAC; projects Path-A green `H-PROJ` ghosts |
-| **Ghost predictions** | Path A (homography/green `H-PROJ`) and Path C (world projection/orange `WORLD`) are **active**; Path B (pixel extrapolation/red `EXTRAP`) is 🔭 planned |
+| **Ghost predictions** | All three paths active — Path A (homography/green `H-PROJ`), Path B (pixel extrapolation/red `EXTRAP`), Path C (world projection/orange `WORLD`) |
 
 ### Platform
 
@@ -466,12 +466,12 @@ The frontend renders a tactical HUD inspired by Anduril's EagleEye UI, implement
 | **Detections** | Slate-blue `#64b5f6` | Diamond markers, corner brackets, `PERSON` confidence pill |
 | **Tracks** | Amber `#ffd740` | Diamond/chevron markers, velocity vector arrows, track ID callouts |
 | **Predictions (H-PROJ)** | Green `#00ff82` solid | ✅ Active — homography-projected ghost; emitted once a camera-pair homography has been learned |
-| **Predictions (EXTRAP)** 🔭 | Red `#ff5050` dashed | *Planned* — pixel-extrapolated ghost (renderer-ready; not emitted by the backend yet) |
+| **Predictions (EXTRAP)** | Red `#ff5050` dashed | ✅ Active — pixel-extrapolated dead-reckoning when a camera loses a previously-seen target |
 | **Predictions (WORLD)** | Orange `#ff9800` dashed | ✅ Active — world-coordinate pinhole projection; the only ghost path emitted today |
 | **Compass ribbon** 🔭 | — | *Planned* — not in the current canvas renderer |
 | **Threat ring** 🔭 | Per-IFF color | *Planned* — not in the current canvas renderer |
 
-Detection overlays show what the model sees *right now*. Track overlays show persistent identity across frames. Predictions show cross-camera projections — green `H-PROJ` (homography, most accurate) and orange `WORLD` (world-model fallback) are emitted today; red `EXTRAP` (pixel extrapolation) is 🔭 planned.
+Detection overlays show what the model sees *right now*. Track overlays show persistent identity across frames. Predictions show cross-camera projections — green `H-PROJ` (homography, most accurate), orange `WORLD` (world-model fallback), and red `EXTRAP` (pixel extrapolation, when a camera has lost a previously-seen target) are all emitted.
 
 ---
 
@@ -575,9 +575,8 @@ The mobile client:
 
 ### Cross-camera prediction
 
-> Path A (homography) and Path C (world projection) are active; rows mentioning Path B
-> (pixel extrapolation) describe 🔭 **planned** behavior (see the
-> [Implementation status](#-implementation-status) table).
+> All three prediction paths — Path A (homography), Path B (pixel extrapolation), and
+> Path C (world projection) — are active. See the [Implementation status](#-implementation-status) table.
 
 | Edge case | Behavior | Mitigation |
 |---|---|---|

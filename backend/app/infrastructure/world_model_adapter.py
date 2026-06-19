@@ -266,6 +266,13 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             ransac_threshold=config_repo.get_float("homography_ransac_threshold", 12.0),
         )
 
+        # Pixel-extrapolation ghosts (Path B red EXTRAP)
+        fps = config_repo.get_float("target_fps", 24.0)
+        self._extrap_fps = fps if fps > 0 else 24.0
+        # A camera seen within this window is "live"; longer means it has lost the
+        # object and becomes eligible for a ghost prediction.
+        self._live_track_seconds = 2.0 / self._extrap_fps
+
         # Initialize default calibrations if positions provided
         self._init_default_calibrations()
         
@@ -634,6 +641,51 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             )
         return None
 
+    def _try_extrapolation_prediction(
+        self, camera_id: int, obj: WorldObject, time_since_seen: float
+    ) -> Optional[PredictedTarget]:
+        """Dead-reckon a ghost from this camera's last-known pixel position, sliding it
+        along the per-camera pixel velocity with an adaptive budget. Returns None when
+        this camera has no pixel history for the object (so the caller falls through)."""
+        last_pixel = obj.camera_pixel_positions.get(camera_id)
+        if last_pixel is None:
+            return None
+
+        vx, vy = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
+        speed = (vx * vx + vy * vy) ** 0.5
+        budget = min(250.0, 80.0 + 40.0 * time_since_seen)
+        if speed < 1e-6:
+            cx, cy = last_pixel
+        else:
+            disp = min(budget, speed * time_since_seen * self._extrap_fps)
+            cx = last_pixel[0] + (vx / speed) * disp
+            cy = last_pixel[1] + (vy / speed) * disp
+
+        depth = max(abs(obj.position.z), 0.5)
+        bbox_height = min(500, max(50, 500 / depth))
+        bbox_width = bbox_height * 0.4
+        try:
+            bbox = BoundingBox(
+                cx - bbox_width / 2, cy - bbox_height / 2,
+                cx + bbox_width / 2, cy + bbox_height / 2,
+            )
+        except ValueError:
+            return None
+
+        confidence = obj.confidence * max(
+            0.1, 1.0 - time_since_seen / self._prediction_horizon
+        )
+        return PredictedTarget(
+            object_id=obj.object_id,
+            camera_id=camera_id,
+            predicted_bbox=bbox,
+            confidence=confidence,
+            time_since_seen=time_since_seen,
+            velocity_projection=(vx, vy),
+            source_camera=camera_id,
+            prediction_method=PredictionMethod.EXTRAPOLATION,
+        )
+
     def generate_predictions(self, camera_id: int) -> List[PredictedTarget]:
         """Generate predictions for a camera view."""
         # A view-only camera still needs a calibration to project world objects.
@@ -643,10 +695,12 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         now = datetime.now()
         
         for obj in self._world_objects.values():
-            # Skip if already seen by this camera
-            if camera_id in obj.source_tracks:
+            # Skip objects this camera is tracking live (seen within the live window).
+            last_seen_here = obj.camera_last_seen.get(camera_id)
+            if last_seen_here is not None and \
+                    (now - last_seen_here).total_seconds() < self._live_track_seconds:
                 continue
-            
+
             time_since_seen = (now - obj.last_update).total_seconds()
             if time_since_seen > self._prediction_horizon:
                 continue
@@ -657,6 +711,15 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             )
             if homography_pred is not None:
                 predictions.append(homography_pred)
+                continue
+
+            # Path B: pixel extrapolation (red EXTRAP) — dead-reckon from this camera's
+            # own last-known pixel position. Only fires if it saw the object before.
+            extrap_pred = self._try_extrapolation_prediction(
+                camera_id, obj, time_since_seen
+            )
+            if extrap_pred is not None:
+                predictions.append(extrap_pred)
                 continue
 
             # Path C: world-to-pixel projection (orange WORLD) — always-available fallback.
