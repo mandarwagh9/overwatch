@@ -102,7 +102,7 @@ that describe them are forward-looking design.
 | Optional JWT auth · SSL · atomic Jetson deploy | ✅ Implemented |
 | Cross-camera homography ghosts (green `H-PROJ`) | 🔭 Planned |
 | Pixel-extrapolation ghosts (red `EXTRAP`) | 🔭 Planned |
-| Appearance re-ID (HSV histograms) wired into tracking / fusion | 🔭 Planned |
+| Appearance re-ID (HSV histograms) wired into tracking / fusion | ✅ Implemented |
 | Sensor-trust scoring | 🔭 Planned |
 | Adaptive Kalman noise by bbox area | 🔭 Planned |
 | GPS + IMU fusion into the world model | 🔭 Planned |
@@ -122,10 +122,10 @@ that describe them are forward-looking design.
 |---|---|
 | **Person detection** | YOLOv8n with NMS-level class filter (`classes=[0]`) — person-only |
 | **TensorRT FP16** | `.engine` export on Jetson — ~8 MiB, sub-10 ms inference |
-| **Hungarian tracking** | `scipy.optimize.linear_sum_assignment` — cost `0.6 × IoU + 0.4 × cosine appearance` (appearance term is inactive until re-ID lands, so tracking is effectively pure-IoU today) |
+| **Hungarian tracking** | `scipy.optimize.linear_sum_assignment` — cost `0.6 × IoU + 0.4 × cosine appearance`; appearance descriptors are now computed per detection, so the appearance term is active |
 | **Tracker fallback chain** 🔭 | *Planned* — only Hungarian (with a greedy fallback) is active today; DeepSORT/Centroid are not implemented |
 | **Adaptive Kalman filter** | 6-state `[x, y, z, vx, vy, vz]` — measurement noise scales by **confidence** (bbox-area & sensor-trust scaling 🔭 planned) |
-| **Cross-camera re-ID** 🔭 | *Planned* — 64-dim HSV histogram descriptors (`compute_appearance()` exists but isn't yet wired into detection/tracking) |
+| **Cross-camera re-ID** | 64-dim HSV histogram descriptors, L2-normalized, EMA-smoothed (α = 0.3); computed per detection and used to gate cross-camera association |
 | **Sensor trust scoring** 🔭 | *Planned* — per-sensor trust ∈ [0.1, 1.0]; the Kalman update accepts the param but it is fixed at 1.0 today |
 | **Cross-camera homography** 🔭 | *Planned* — self-calibrating ground-plane H via `cv2.findHomography` + RANSAC (no homography code in the pipeline yet) |
 | **Ghost predictions** | Path C — world-coordinate pinhole projection (orange `WORLD`) is **active**. Path A (homography/green `H-PROJ`) and Path B (pixel extrapolation/red `EXTRAP`) are 🔭 planned |
@@ -486,7 +486,7 @@ Each fused world object maintains a 6-state Kalman filter `[x, y, z, vx, vy, vz]
 Objects from different cameras are matched when:
 - Euclidean distance < 2 m
 - Same `class_id`
-- 🔭 *Planned:* appearance cosine similarity > 0.5 (today the match is distance + class only; the appearance gate is not yet wired in)
+- Appearance cosine similarity ≥ 0.5 when both observations carry a descriptor (differently-dressed people at the same ground position stay separate)
 
 ### Sensor trust 🔭 *(planned)*
 
@@ -496,14 +496,14 @@ The intended design earns per-sensor trust through consistency:
 
 Today the Kalman update accepts a `sensor_trust` argument but it is fixed at `1.0`.
 
-### Appearance re-ID 🔭 *(planned)*
+### Appearance re-ID
 
-- 64-dimensional HSV histogram descriptors (`compute_appearance()` is implemented…)
+- 64-dimensional HSV histogram descriptors computed per detection (~0.1 ms each)
 - L2-normalized for cosine similarity
-- Exponential moving average (α = 0.3) for descriptor stability across frames
+- Exponential moving average (α = 0.3) on the fused world object for descriptor stability
 
-…but `compute_appearance()` is **not yet called** in the pipeline, so `Detection.appearance`
-is always `None` and re-ID is dormant until Phase B.
+Used to gate cross-camera association: two people at the same ground position but with
+different appearance are kept as distinct world objects.
 
 ---
 

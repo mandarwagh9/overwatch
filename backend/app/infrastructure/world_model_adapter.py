@@ -14,7 +14,7 @@ from numpy.typing import NDArray
 from app.application.ports import WorldModelRepository, ConfigurationRepository
 from app.domain.entities import (
     Track, WorldObject, PredictedTarget, CameraCalibration,
-    Point3D, Velocity3D, BoundingBox, PredictionMethod
+    Point3D, Velocity3D, BoundingBox, PredictionMethod, AppearanceDescriptor
 )
 
 
@@ -252,6 +252,12 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         self._default_camera_spacing = 3.0
         self._warned_default_calibration = False
 
+        # Cross-camera appearance re-ID
+        self._appearance_match_threshold = config_repo.get_float(
+            "cross_camera_appearance_threshold", 0.5
+        )
+        self._appearance_ema_alpha = 0.3
+
         # Initialize default calibrations if positions provided
         self._init_default_calibrations()
         
@@ -378,8 +384,10 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             object_id = self._track_to_object[track_key]
             self._update_existing_object(object_id, track, world_pos, timestamp)
         else:
-            # Check for nearby objects (cross-camera matching)
-            existing_id = self._find_matching_object(world_pos, track.class_id)
+            # Check for nearby objects (cross-camera matching, appearance-gated)
+            existing_id = self._find_matching_object(
+                world_pos, track.class_id, track.appearance
+            )
             if existing_id:
                 self._track_to_object[track_key] = existing_id
                 self._update_existing_object(existing_id, track, world_pos, timestamp)
@@ -429,6 +437,9 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         obj.camera_pixel_positions[track.camera_id] = track.bbox.center
         obj.camera_pixel_velocities[track.camera_id] = track.velocity
         obj.camera_last_seen[track.camera_id] = timestamp
+
+        # EMA-smooth the appearance descriptor for re-ID stability
+        obj.appearance = self._blend_appearance(obj.appearance, track.appearance)
     
     def _create_new_object(
         self,
@@ -450,6 +461,7 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             confidence=track.confidence,
             last_seen_camera=track.camera_id,
             last_update=timestamp,
+            appearance=track.appearance,
             source_tracks={track.camera_id: track.track_id},
             camera_pixel_positions={track.camera_id: track.bbox.center},
             camera_pixel_velocities={track.camera_id: track.velocity},
@@ -465,25 +477,60 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         
         logger.debug(f"Created new world object {object_id}")
     
+    def _blend_appearance(
+        self,
+        old: Optional[AppearanceDescriptor],
+        new: Optional[AppearanceDescriptor],
+    ) -> Optional[AppearanceDescriptor]:
+        """EMA-blend two appearance descriptors (alpha weights the new observation)."""
+        if new is None:
+            return old
+        if old is None:
+            return new
+        a = self._appearance_ema_alpha
+        blended = (1.0 - a) * old.vector + a * new.vector
+        norm = float(np.linalg.norm(blended)) + 1e-6
+        return AppearanceDescriptor(vector=(blended / norm).astype(np.float32))
+
     def _find_matching_object(
         self,
         world_pos: Point3D,
-        class_id: int
+        class_id: int,
+        appearance: Optional[AppearanceDescriptor] = None,
     ) -> Optional[int]:
-        """Find existing object that matches position."""
+        """Find an existing world object matching this observation.
+
+        Candidates must share the class and lie within ``distance_threshold`` metres.
+        When both the candidate and the observation carry an appearance descriptor,
+        a cosine similarity below ``_appearance_match_threshold`` rejects the match —
+        so two differently-dressed people at the same spot stay separate. With no
+        appearance available it falls back to nearest-within-threshold.
+        """
+        distance_threshold = 2.0  # metres
         best_match = None
-        min_distance = float('inf')
-        threshold = 2.0  # meters
-        
+        best_score = -1.0
+
         for obj_id, obj in self._world_objects.items():
             if obj.class_id != class_id:
                 continue
-            
+
             distance = obj.position.distance_to(world_pos)
-            if distance < min_distance and distance < threshold:
-                min_distance = distance
+            if distance >= distance_threshold:
+                continue
+
+            if appearance is not None and obj.appearance is not None:
+                similarity = obj.appearance.cosine_similarity(appearance)
+                if similarity < self._appearance_match_threshold:
+                    continue
+                score = similarity
+            else:
+                # No appearance to compare — prefer the closest candidate.
+                score = 1.0 - (distance / distance_threshold)
+
+            if score > best_score:
+                best_score = score
                 best_match = obj_id
-        
+
         return best_match
     
     def _cleanup_old_objects(self, current_time: datetime) -> None:
