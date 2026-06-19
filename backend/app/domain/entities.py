@@ -4,7 +4,7 @@ These are pure Python objects with no external dependencies.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple
 from enum import Enum, auto
 from datetime import datetime
 import numpy as np

@@ -10,8 +10,8 @@ from dataclasses import dataclass
 import logging
 
 from app.domain.entities import (
-    PerceptionSnapshot, CameraFrame, Detection, Track, 
-    WorldObject, PredictedTarget
+    PerceptionSnapshot, Track, 
+    PredictedTarget
 )
 from app.application.ports import (
     CameraRepository, DetectionRepository, TrackingRepository,

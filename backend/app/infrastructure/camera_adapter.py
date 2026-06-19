@@ -115,7 +115,7 @@ class CameraCapture:
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.target_height)
             
             # Try MJPEG codec
-            self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+            self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))  # type: ignore[attr-defined]
             
             self._is_running = True
             self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
@@ -193,7 +193,7 @@ class CameraCapture:
                 # Create CameraFrame
                 camera_frame = CameraFrame(
                     camera_id=self.camera_id,
-                    frame_data=frame,
+                    frame_data=frame,  # type: ignore[arg-type]  # cv2 ndarray is uint8
                     timestamp=datetime.now(),
                     frame_number=self._buffer.frame_counter
                 )
@@ -313,7 +313,7 @@ class VirtualCamera:
             # Create and buffer CameraFrame
             camera_frame = CameraFrame(
                 camera_id=self.camera_id,
-                frame_data=frame,
+                frame_data=frame,  # type: ignore[arg-type]  # cv2 ndarray is uint8
                 timestamp=datetime.now(),
                 frame_number=self._buffer.frame_counter
             )
@@ -480,7 +480,7 @@ class OpenCVCameraRepository(CameraRepository):
         """Register a virtual camera."""
         with self._virtual_camera_lock:
             if len(self._cameras) + len(self._virtual_cameras) >= self._max_cameras:
-                logger.error(f"Maximum camera limit reached")
+                logger.error("Maximum camera limit reached")
                 return None
 
             # Find available slot

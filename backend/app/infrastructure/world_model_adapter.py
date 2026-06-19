@@ -3,12 +3,10 @@ World model repository adapter.
 Handles sensor fusion, coordinate transforms, and predictions.
 """
 from __future__ import annotations
-import asyncio
 import logging
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
-from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,7 +14,7 @@ from numpy.typing import NDArray
 from app.application.ports import WorldModelRepository, ConfigurationRepository
 from app.domain.entities import (
     Track, WorldObject, PredictedTarget, CameraCalibration,
-    Point3D, Velocity3D, BoundingBox, Keypoint, PredictionMethod
+    Point3D, Velocity3D, BoundingBox, PredictionMethod
 )
 
 

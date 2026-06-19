@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.infrastructure.container import ApplicationContainer, create_container
@@ -252,9 +252,10 @@ async def websocket_endpoint(websocket: WebSocket):
         # Keep connection alive
         while True:
             try:
-                # Wait for client messages (ping/pong or commands)
-                message = await websocket.receive_text()
-                # Handle any client commands here
+                # Wait for client messages (ping/pong or commands).
+                # The viewer stream is server-push; inbound text is only used
+                # to keep the socket alive and detect disconnects.
+                await websocket.receive_text()
             except WebSocketDisconnect:
                 break
 
@@ -277,7 +278,6 @@ async def camera_websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    import json
 
     await websocket.accept()
 
@@ -362,7 +362,7 @@ async def camera_websocket_endpoint(websocket: WebSocket):
                 logger.warning(f"Camera {camera_id}: Receive timeout, sending ping")
                 try:
                     await websocket.send_text(json.dumps({"type": "ping"}))
-                except:
+                except Exception:
                     break
             except WebSocketDisconnect:
                 logger.info(f"Camera {camera_id}: WebSocket disconnected")
@@ -403,7 +403,7 @@ if __name__ == "__main__":
         if os.path.exists(cert_path) and os.path.exists(key_path):
             ssl_kwargs["ssl_certfile"] = cert_path
             ssl_kwargs["ssl_keyfile"] = key_path
-            logger.info(f"🔒 SSL enabled")
+            logger.info("🔒 SSL enabled")
         elif settings.debug:
             logger.warning(
                 f"⚠️ SSL certificates not found at {cert_path}, "

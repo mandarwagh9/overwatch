@@ -3,7 +3,6 @@ Configuration adapter using Pydantic settings.
 No hardcoded values - everything comes from environment or config files.
 """
 from __future__ import annotations
-import os
 import json
 from typing import List, Optional, Any, Dict, Tuple
 from functools import lru_cache
@@ -11,7 +10,6 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.application.ports import ConfigurationRepository
-from app.domain.entities import InvalidConfigurationError
 
 
 class Settings(BaseSettings):
@@ -22,7 +20,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
-        env_parse_json=True
     )
     
     # Application

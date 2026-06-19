@@ -3,7 +3,7 @@ Frame encoder adapter using OpenCV.
 """
 from __future__ import annotations
 import logging
-from typing import Optional
+from typing import Optional, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -47,7 +47,8 @@ class OpenCVFrameEncoder(FrameEncoderRepository):
         try:
             np_arr = np.frombuffer(jpeg_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            return frame
+            # cv2 returns a generically-typed ndarray; IMREAD_COLOR yields uint8.
+            return cast("Optional[NDArray[np.uint8]]", frame)
         except Exception as e:
             logger.error(f"Frame decoding error: {e}")
             return None
