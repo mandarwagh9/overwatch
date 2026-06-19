@@ -105,7 +105,7 @@ that describe them are forward-looking design.
 | Appearance re-ID (HSV histograms) wired into tracking / fusion | ✅ Implemented |
 | Sensor-trust scoring | 🔭 Planned |
 | Adaptive Kalman noise by bbox area | 🔭 Planned |
-| GPS + IMU fusion into the world model | 🔭 Planned |
+| GPS + IMU fusion into the world model | ✅ Implemented |
 | DeepSORT / centroid tracker fallback chain | 🔭 Planned |
 
 > Config and helper scaffolding for the 🔭 items already exists (`compute_appearance()`,
@@ -136,7 +136,7 @@ that describe them are forward-looking design.
 |---|---|
 | **Multi-camera** | Up to 4 concurrent streams (physical MJPEG/RTSP + mobile virtual cameras) |
 | **Mobile streaming** | Phone browsers → `getUserMedia` → binary JPEG over WebSocket → `VirtualCamera` |
-| **GPS + IMU fusion** 🔭 | *Planned* — the mobile client sends GPS (`watchPosition`) + IMU (`DeviceOrientationEvent`), but the backend currently receives and discards `sensor_data`; fusion into the world model is not wired yet |
+| **GPS + IMU fusion** | Mobile geolocation (`watchPosition`) → equirectangular projection into the local frame; `DeviceOrientationEvent` → camera rotation. Fused into the camera calibration (`GPS_REFERENCE_*` or first-fix origin) |
 | **AR overlays** | Canvas-based: cyan detection brackets, amber track boxes, green/orange/red ghost predictions |
 | **Binary protocol** | msgpack-serialized snapshots — zero-copy broadcast to all viewers |
 | **SSL/TLS** | Self-signed certificates with SAN for LAN IP access (required for `getUserMedia`) |
@@ -399,7 +399,7 @@ When `AUTH_ENABLED=true`, both endpoints require a `?token=<jwt>` query paramete
 Client → { "type": "register", "role": "camera_source", "camera_id": null }
 Server → { "type": "registered", "camera_id": 0 }
 Client → [binary JPEG frames]
-Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }   # received, not yet fused 🔭
+Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }   # fused into camera calibration
 ```
 
 ---

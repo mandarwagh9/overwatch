@@ -4,7 +4,8 @@ Handles sensor fusion, coordinate transforms, and predictions.
 """
 from __future__ import annotations
 import logging
-from typing import List, Dict, Optional, Tuple
+import math
+from typing import Any, List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -17,6 +18,7 @@ from app.domain.entities import (
     Point3D, Velocity3D, BoundingBox, PredictionMethod, AppearanceDescriptor
 )
 from app.infrastructure.homography import HomographyEstimator
+from app.infrastructure.geo import gps_to_local
 
 
 logger = logging.getLogger(__name__)
@@ -272,6 +274,13 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         # A camera seen within this window is "live"; longer means it has lost the
         # object and becomes eligible for a ghost prediction.
         self._live_track_seconds = 2.0 / self._extrap_fps
+
+        # GPS/IMU fusion reference (None -> the first GPS fix becomes the local origin)
+        ref_lat = config_repo.get("gps_reference_lat")
+        ref_lng = config_repo.get("gps_reference_lng")
+        self._gps_ref: Optional[Tuple[float, float]] = None
+        if isinstance(ref_lat, (int, float)) and isinstance(ref_lng, (int, float)):
+            self._gps_ref = (float(ref_lat), float(ref_lng))
 
         # Initialize default calibrations if positions provided
         self._init_default_calibrations()
@@ -766,3 +775,58 @@ class WorldModelRepositoryImpl(WorldModelRepository):
     def get_camera_calibration(self, camera_id: int) -> Optional[CameraCalibration]:
         """Get calibration for a camera."""
         return self._transformer._calibrations.get(camera_id)
+
+    def update_camera_sensor(
+        self,
+        camera_id: int,
+        gps: Optional[Dict[str, Any]] = None,
+        orientation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fuse mobile GPS/IMU into ``camera_id``'s calibration.
+
+        GPS -> local position (equirectangular projection); DeviceOrientation
+        (alpha/beta/gamma degrees) -> camera rotation (roll, pitch, yaw radians).
+        Overrides the auto-default calibration for that camera. Missing fields are
+        kept from any existing calibration.
+        """
+        position: Optional[Point3D] = None
+        if gps:
+            lat, lng = gps.get("latitude"), gps.get("longitude")
+            if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                if self._gps_ref is None:
+                    self._gps_ref = (float(lat), float(lng))  # first fix = local origin
+                x, y = gps_to_local(
+                    float(lat), float(lng), self._gps_ref[0], self._gps_ref[1]
+                )
+                alt = gps.get("altitude")
+                z = float(alt) if isinstance(alt, (int, float)) else self._default_camera_height
+                position = Point3D(x, y, z)
+
+        rotation: Optional[Tuple[float, float, float]] = None
+        if orientation:
+            alpha = orientation.get("alpha") or 0.0  # compass heading -> yaw
+            beta = orientation.get("beta") or 0.0    # front-back tilt -> pitch
+            gamma = orientation.get("gamma") or 0.0  # left-right tilt  -> roll
+            rotation = (
+                math.radians(float(gamma)),
+                math.radians(float(beta)),
+                math.radians(float(alpha)),
+            )
+
+        if position is None and rotation is None:
+            return
+
+        existing = self._transformer._calibrations.get(camera_id)
+        accuracy = gps.get("accuracy") if gps else None
+        self._transformer.set_calibration(CameraCalibration(
+            camera_id=camera_id,
+            position=position or (
+                existing.position if existing
+                else Point3D(0.0, 0.0, self._default_camera_height)
+            ),
+            rotation=rotation or (existing.rotation if existing else (0.0, 0.0, 0.0)),
+            focal_length=existing.focal_length if existing else self._default_focal_length,
+            image_center=existing.image_center if existing else (640.0, 360.0),
+            gps_accuracy=float(accuracy) if isinstance(accuracy, (int, float)) else 5.0,
+        ))
+        logger.info(f"Camera {camera_id}: calibration updated from GPS/IMU sensor data")

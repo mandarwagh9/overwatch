@@ -157,6 +157,19 @@ class WorldModelRepository(ABC):
         """Get calibration for a camera."""
         pass
 
+    def update_camera_sensor(
+        self,
+        camera_id: int,
+        gps: Optional[Dict[str, Any]] = None,
+        orientation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fuse mobile GPS/IMU sensor data into a camera's calibration.
+
+        Optional capability; the default is a no-op so adapters that don't support
+        sensor fusion remain valid.
+        """
+        return None
+
 
 class FrameEncoderRepository(ABC):
     """Repository for frame encoding."""
