@@ -24,14 +24,15 @@
   "jest": {
     "collectCoverageFrom": [
       "src/config/index.js",
-      "src/domain/entities.js"
+      "src/domain/entities.js",
+      "src/infrastructure/apiAdapter.js"
     ],
     "coverageThreshold": {
       "global": {
-        "statements": 55,
-        "branches": 45,
-        "functions": 30,
-        "lines": 55
+        "statements": 65,
+        "branches": 55,
+        "functions": 40,
+        "lines": 65
       }
     }
   },
