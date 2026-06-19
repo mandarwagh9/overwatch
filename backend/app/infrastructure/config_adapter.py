@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     appearance_reid_enabled: bool = Field(default=True)
     cross_camera_appearance_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
+    # Sensor trust + adaptive Kalman
+    sensor_trust_innovation_threshold: float = Field(default=1.0, ge=0.0)
+    bbox_reference_area: float = Field(default=40000.0, gt=0.0)
+
     # Homography settings
     homography_min_pairs: int = Field(default=4, ge=3)
     homography_max_pairs: int = Field(default=100, ge=10)

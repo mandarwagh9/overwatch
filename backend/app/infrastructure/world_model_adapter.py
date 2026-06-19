@@ -64,29 +64,38 @@ class KalmanFilter:
         self,
         measurement: Point3D,
         confidence: float = 1.0,
-        sensor_trust: float = 1.0
-    ) -> None:
-        """Update with measurement."""
+        sensor_trust: float = 1.0,
+        area_factor: float = 1.0,
+    ) -> float:
+        """Update with a measurement and return the innovation magnitude (metres).
+
+        Measurement noise R scales inversely with a quality factor combining
+        detection confidence, per-sensor trust, and bbox area (larger bbox =
+        closer = more reliable depth). Higher quality => smaller R => the filter
+        trusts the measurement more.
+        """
         # Measurement matrix (we measure position only)
         H = np.array([
             [1, 0, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0],
             [0, 0, 1, 0, 0, 0]
         ])
-        
+
         # Adaptive measurement noise
-        quality = max(confidence, 0.1) * max(sensor_trust, 0.1)
+        quality = max(confidence, 0.1) * max(sensor_trust, 0.1) * max(area_factor, 0.1)
         R = np.eye(3) * (self.r_base / quality)
-        
+
         # Kalman gain
         S = H @ self.covariance @ H.T + R
         K = self.covariance @ H.T @ np.linalg.inv(S)
-        
+
         # Update
         z = np.array([measurement.x, measurement.y, measurement.z])
         y = z - H @ self.state
+        innovation = float(np.linalg.norm(y))
         self.state = self.state + K @ y
         self.covariance = (np.eye(6) - K @ H) @ self.covariance
+        return innovation
     
     @property
     def position(self) -> Point3D:
@@ -282,6 +291,14 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         if isinstance(ref_lat, (int, float)) and isinstance(ref_lng, (int, float)):
             self._gps_ref = (float(ref_lat), float(ref_lng))
 
+        # Per-sensor trust scoring + adaptive Kalman by bbox area
+        self._sensor_trust: Dict[int, float] = {}
+        self._trust_innovation_threshold = config_repo.get_float(
+            "sensor_trust_innovation_threshold", 1.0
+        )
+        self._trust_step = 0.05
+        self._bbox_reference_area = config_repo.get_float("bbox_reference_area", 40000.0)
+
         # Initialize default calibrations if positions provided
         self._init_default_calibrations()
         
@@ -439,7 +456,15 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             kf = self._kalman_filters[object_id]
             dt = max(0.0, (timestamp - obj.last_update).total_seconds())
             kf.predict(dt)
-            kf.update(world_pos, confidence=track.confidence)
+            trust = self._sensor_trust.get(track.camera_id, 1.0)
+            area_factor = self._bbox_area_factor(track.bbox.area)
+            innovation = kf.update(
+                world_pos,
+                confidence=track.confidence,
+                sensor_trust=trust,
+                area_factor=area_factor,
+            )
+            self._update_sensor_trust(track.camera_id, innovation)
 
             obj.position = kf.position
             obj.velocity = kf.velocity
@@ -506,6 +531,27 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         
         logger.debug(f"Created new world object {object_id}")
     
+    def _bbox_area_factor(self, area: float) -> float:
+        """Map a detection bbox area to a [0.1, 1.0] reliability factor: a larger
+        bbox means the person is closer, so depth is more reliable and noise lower."""
+        if self._bbox_reference_area <= 0:
+            return 1.0
+        return max(0.1, min(1.0, area / self._bbox_reference_area))
+
+    def _update_sensor_trust(self, camera_id: int, innovation: float) -> None:
+        """Nudge a camera's trust up on a consistent measurement (low innovation) and
+        down on an outlier (high innovation), clamped to [0.1, 1.0]."""
+        trust = self._sensor_trust.get(camera_id, 1.0)
+        if innovation <= self._trust_innovation_threshold:
+            trust = min(1.0, trust + self._trust_step)
+        else:
+            trust = max(0.1, trust - self._trust_step)
+        self._sensor_trust[camera_id] = trust
+
+    def get_sensor_trust(self, camera_id: int) -> float:
+        """Current trust score for a camera (defaults to 1.0 before any update)."""
+        return self._sensor_trust.get(camera_id, 1.0)
+
     def _blend_appearance(
         self,
         old: Optional[AppearanceDescriptor],

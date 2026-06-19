@@ -103,14 +103,14 @@ that describe them are forward-looking design.
 | Cross-camera homography ghosts (green `H-PROJ`) | ✅ Implemented |
 | Pixel-extrapolation ghosts (red `EXTRAP`) | ✅ Implemented |
 | Appearance re-ID (HSV histograms) wired into tracking / fusion | ✅ Implemented |
-| Sensor-trust scoring | 🔭 Planned |
-| Adaptive Kalman noise by bbox area | 🔭 Planned |
+| Sensor-trust scoring | ✅ Implemented |
+| Adaptive Kalman noise by bbox area | ✅ Implemented |
 | GPS + IMU fusion into the world model | ✅ Implemented |
 | DeepSORT / centroid tracker fallback chain | 🔭 Planned |
 
-> Config and helper scaffolding for the 🔭 items already exists (`compute_appearance()`,
-> the `HOMOGRAPHY_*` / `GPS_REFERENCE_*` env vars), but those paths are **not yet active**
-> in the pipeline. The build order is tracked in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+> The remaining 🔭 items (DeepSORT/centroid fallback chain, compass ribbon, threat ring)
+> are deferred — they're not blockers for the core perception pipeline. The roadmap and
+> build order are tracked in [`docs/superpowers/specs/`](docs/superpowers/specs/).
 
 ---
 
@@ -124,9 +124,9 @@ that describe them are forward-looking design.
 | **TensorRT FP16** | `.engine` export on Jetson — ~8 MiB, sub-10 ms inference |
 | **Hungarian tracking** | `scipy.optimize.linear_sum_assignment` — cost `0.6 × IoU + 0.4 × cosine appearance`; appearance descriptors are now computed per detection, so the appearance term is active |
 | **Tracker fallback chain** 🔭 | *Planned* — only Hungarian (with a greedy fallback) is active today; DeepSORT/Centroid are not implemented |
-| **Adaptive Kalman filter** | 6-state `[x, y, z, vx, vy, vz]` — measurement noise scales by **confidence** (bbox-area & sensor-trust scaling 🔭 planned) |
+| **Adaptive Kalman filter** | 6-state `[x, y, z, vx, vy, vz]` — measurement noise scales by confidence, bbox area, and sensor trust |
 | **Cross-camera re-ID** | 64-dim HSV histogram descriptors, L2-normalized, EMA-smoothed (α = 0.3); computed per detection and used to gate cross-camera association |
-| **Sensor trust scoring** 🔭 | *Planned* — per-sensor trust ∈ [0.1, 1.0]; the Kalman update accepts the param but it is fixed at 1.0 today |
+| **Sensor trust scoring** | Per-sensor trust ∈ [0.1, 1.0] — rises on consistent measurements, decays on innovation outliers; scales Kalman measurement noise |
 | **Cross-camera homography** | Self-calibrating ground-plane H from shared foot-point observations via `cv2.findHomography` + RANSAC; projects Path-A green `H-PROJ` ghosts |
 | **Ghost predictions** | All three paths active — Path A (homography/green `H-PROJ`), Path B (pixel extrapolation/red `EXTRAP`), Path C (world projection/orange `WORLD`) |
 
@@ -488,13 +488,13 @@ Objects from different cameras are matched when:
 - Same `class_id`
 - Appearance cosine similarity ≥ 0.5 when both observations carry a descriptor (differently-dressed people at the same ground position stay separate)
 
-### Sensor trust 🔭 *(planned)*
+### Sensor trust
 
-The intended design earns per-sensor trust through consistency:
-- **Consistent measurements** → trust increases (capped at 1.0)
+Each camera/sensor earns trust through consistency:
+- **Consistent measurements** (low Kalman innovation) → trust increases (capped at 1.0)
 - **Innovation outliers** → trust decays (floored at 0.1)
 
-Today the Kalman update accepts a `sensor_trust` argument but it is fixed at `1.0`.
+Trust scales the Kalman measurement noise, so flaky sensors are automatically down-weighted.
 
 ### Appearance re-ID
 
