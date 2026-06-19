@@ -128,29 +128,26 @@ class CameraTracker:
         """Update tracks with new detections."""
         # Predict existing tracks
         self._predict_tracks()
-        
-        # Associate detections with tracks
-        matched_tracks, matched_dets, unmatched_tracks, unmatched_dets = \
+
+        # Associate detections with tracks (results are keyed by track id)
+        matched, unmatched_track_ids, unmatched_det_indices = \
             self._associate_detections(detections)
-        
+
         # Update matched tracks
-        for track_idx, det_idx in zip(matched_tracks, matched_dets):
-            track_id = list(self.tracks.keys())[track_idx]
-            detection = detections[det_idx]
-            self._update_track(track_id, detection)
-        
+        for track_id, det_idx in matched:
+            self._update_track(track_id, detections[det_idx])
+
         # Mark unmatched tracks as coasting
-        for track_idx in unmatched_tracks:
-            track_id = list(self.tracks.keys())[track_idx]
+        for track_id in unmatched_track_ids:
             self._coast_track(track_id)
-        
+
         # Create new tracks for unmatched detections
-        for det_idx in unmatched_dets:
+        for det_idx in unmatched_det_indices:
             self._create_track(detections[det_idx])
-        
+
         # Remove old tracks
         self._remove_old_tracks()
-        
+
         return list(self.tracks.values())
     
     def _predict_tracks(self) -> None:
@@ -179,40 +176,50 @@ class CameraTracker:
     def _associate_detections(
         self,
         detections: List[Detection]
-    ) -> Tuple[List[int], List[int], List[int], List[int]]:
-        """Associate detections with existing tracks."""
-        if not self.tracks or not detections:
-            return [], [], list(range(len(self.tracks))), list(range(len(detections)))
-        
-        track_list = list(self.tracks.values())
-        
-        # Compute cost matrix
+    ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+        """Associate detections with existing tracks.
+
+        Returns ``(matched, unmatched_track_ids, unmatched_det_indices)`` where
+        ``matched`` is a list of ``(track_id, detection_index)`` pairs. Resolving
+        the Hungarian row indices to track *ids* here (rather than handing
+        positional indices back to the caller) keeps association robust to dict
+        ordering and avoids rebuilding ``list(self.tracks.keys())`` per match.
+        """
+        track_ids = list(self.tracks.keys())
+        if not track_ids or not detections:
+            return [], list(track_ids), list(range(len(detections)))
+
+        track_list = [self.tracks[tid] for tid in track_ids]
+
+        # Compute cost matrix (rows align with track_ids order)
         cost_matrix = compute_cost_matrix(
             track_list, detections,
             appearance_weight=self.appearance_weight
         )
-        
+
         # Run Hungarian algorithm
         row_ind, col_ind = hungarian_assignment(cost_matrix)
-        
+
         # Filter by IoU threshold
-        matched_tracks = []
-        matched_dets = []
-        
+        matched: List[Tuple[int, int]] = []
+        matched_rows: set[int] = set()
+        matched_cols: set[int] = set()
+
         for r, c in zip(row_ind, col_ind):
-            track = track_list[r]
-            det = detections[c]
-            iou = compute_iou(track.bbox, det.bbox)
-            
+            iou = compute_iou(track_list[r].bbox, detections[c].bbox)
             if iou >= self.iou_threshold:
-                matched_tracks.append(r)
-                matched_dets.append(c)
-        
-        # Find unmatched
-        unmatched_tracks = [i for i in range(len(track_list)) if i not in matched_tracks]
-        unmatched_dets = [i for i in range(len(detections)) if i not in matched_dets]
-        
-        return matched_tracks, matched_dets, unmatched_tracks, unmatched_dets
+                matched.append((track_ids[r], c))
+                matched_rows.add(r)
+                matched_cols.add(c)
+
+        unmatched_track_ids = [
+            track_ids[i] for i in range(len(track_ids)) if i not in matched_rows
+        ]
+        unmatched_det_indices = [
+            i for i in range(len(detections)) if i not in matched_cols
+        ]
+
+        return matched, unmatched_track_ids, unmatched_det_indices
     
     def _update_track(self, track_id: int, detection: Detection) -> None:
         """Update a track with a matched detection."""

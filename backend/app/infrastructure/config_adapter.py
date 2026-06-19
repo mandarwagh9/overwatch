@@ -99,7 +99,15 @@ class Settings(BaseSettings):
     person_height_meters: float = Field(default=1.7, ge=0.5, le=3.0)
     prediction_horizon_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
     world_object_max_age_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
-    
+
+    # Cross-camera appearance re-ID
+    appearance_reid_enabled: bool = Field(default=True)
+    cross_camera_appearance_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    # Sensor trust + adaptive Kalman
+    sensor_trust_innovation_threshold: float = Field(default=1.0, ge=0.0)
+    bbox_reference_area: float = Field(default=40000.0, gt=0.0)
+
     # Homography settings
     homography_min_pairs: int = Field(default=4, ge=3)
     homography_max_pairs: int = Field(default=100, ge=10)

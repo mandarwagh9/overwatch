@@ -350,8 +350,17 @@ async def camera_websocket_endpoint(websocket: WebSocket):
                         # Send pong to keep connection alive
                         await websocket.send_text(json.dumps({"type": "pong"}))
                     elif msg_type == "sensor_data":
-                        # Handle sensor data if needed
-                        pass
+                        # Fuse mobile GPS/IMU into this camera's calibration.
+                        try:
+                            container.world_model_repo.update_camera_sensor(
+                                camera_id,
+                                gps=control.get("gps"),
+                                orientation=control.get("orientation"),
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Camera {camera_id}: sensor_data fusion error: {e}"
+                            )
                 
                 # Check for timeout (no frames for 60 seconds)
                 if time.time() - last_frame_time > 60:

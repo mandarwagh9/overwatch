@@ -4,7 +4,8 @@ Handles sensor fusion, coordinate transforms, and predictions.
 """
 from __future__ import annotations
 import logging
-from typing import List, Dict, Optional, Tuple
+import math
+from typing import Any, List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -14,8 +15,10 @@ from numpy.typing import NDArray
 from app.application.ports import WorldModelRepository, ConfigurationRepository
 from app.domain.entities import (
     Track, WorldObject, PredictedTarget, CameraCalibration,
-    Point3D, Velocity3D, BoundingBox, PredictionMethod
+    Point3D, Velocity3D, BoundingBox, PredictionMethod, AppearanceDescriptor
 )
+from app.infrastructure.homography import HomographyEstimator
+from app.infrastructure.geo import gps_to_local
 
 
 logger = logging.getLogger(__name__)
@@ -61,29 +64,38 @@ class KalmanFilter:
         self,
         measurement: Point3D,
         confidence: float = 1.0,
-        sensor_trust: float = 1.0
-    ) -> None:
-        """Update with measurement."""
+        sensor_trust: float = 1.0,
+        area_factor: float = 1.0,
+    ) -> float:
+        """Update with a measurement and return the innovation magnitude (metres).
+
+        Measurement noise R scales inversely with a quality factor combining
+        detection confidence, per-sensor trust, and bbox area (larger bbox =
+        closer = more reliable depth). Higher quality => smaller R => the filter
+        trusts the measurement more.
+        """
         # Measurement matrix (we measure position only)
         H = np.array([
             [1, 0, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0],
             [0, 0, 1, 0, 0, 0]
         ])
-        
+
         # Adaptive measurement noise
-        quality = max(confidence, 0.1) * max(sensor_trust, 0.1)
+        quality = max(confidence, 0.1) * max(sensor_trust, 0.1) * max(area_factor, 0.1)
         R = np.eye(3) * (self.r_base / quality)
-        
+
         # Kalman gain
         S = H @ self.covariance @ H.T + R
         K = self.covariance @ H.T @ np.linalg.inv(S)
-        
+
         # Update
         z = np.array([measurement.x, measurement.y, measurement.z])
         y = z - H @ self.state
+        innovation = float(np.linalg.norm(y))
         self.state = self.state + K @ y
         self.covariance = (np.eye(6) - K @ H) @ self.covariance
+        return innovation
     
     @property
     def position(self) -> Point3D:
@@ -245,7 +257,48 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         self._person_height = config_repo.get_float("person_height_meters", 1.7)
         self._max_age = config_repo.get_float("world_object_max_age_seconds", 5.0)
         self._prediction_horizon = config_repo.get_float("prediction_horizon_seconds", 5.0)
-        
+
+        # Default calibration (used when CAMERA_POSITIONS is not configured)
+        self._default_focal_length = 800.0
+        self._default_camera_height = 2.5
+        self._default_camera_spacing = 3.0
+        self._warned_default_calibration = False
+
+        # Cross-camera appearance re-ID
+        self._appearance_match_threshold = config_repo.get_float(
+            "cross_camera_appearance_threshold", 0.5
+        )
+        self._appearance_ema_alpha = 0.3
+
+        # Cross-camera homography (Path A green H-PROJ ghost predictions)
+        self._homography = HomographyEstimator(
+            min_pairs=config_repo.get_int("homography_min_pairs", 4),
+            max_pairs=config_repo.get_int("homography_max_pairs", 100),
+            ransac_threshold=config_repo.get_float("homography_ransac_threshold", 12.0),
+        )
+
+        # Pixel-extrapolation ghosts (Path B red EXTRAP)
+        fps = config_repo.get_float("target_fps", 24.0)
+        self._extrap_fps = fps if fps > 0 else 24.0
+        # A camera seen within this window is "live"; longer means it has lost the
+        # object and becomes eligible for a ghost prediction.
+        self._live_track_seconds = 2.0 / self._extrap_fps
+
+        # GPS/IMU fusion reference (None -> the first GPS fix becomes the local origin)
+        ref_lat = config_repo.get("gps_reference_lat")
+        ref_lng = config_repo.get("gps_reference_lng")
+        self._gps_ref: Optional[Tuple[float, float]] = None
+        if isinstance(ref_lat, (int, float)) and isinstance(ref_lng, (int, float)):
+            self._gps_ref = (float(ref_lat), float(ref_lng))
+
+        # Per-sensor trust scoring + adaptive Kalman by bbox area
+        self._sensor_trust: Dict[int, float] = {}
+        self._trust_innovation_threshold = config_repo.get_float(
+            "sensor_trust_innovation_threshold", 1.0
+        )
+        self._trust_step = 0.05
+        self._bbox_reference_area = config_repo.get_float("bbox_reference_area", 40000.0)
+
         # Initialize default calibrations if positions provided
         self._init_default_calibrations()
         
@@ -274,7 +327,43 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             )
             self._transformer.set_calibration(calibration)
             logger.info(f"Camera {i} calibrated at position ({pos[0]}, {pos[1]}, {pos[2]})")
-    
+
+    def _ensure_calibration(self, camera_id: int) -> None:
+        """Ensure ``camera_id`` has a calibration, synthesizing a default if not.
+
+        Without ``CAMERA_POSITIONS`` the world model would otherwise produce no
+        world objects or predictions at all (``pixel_to_world`` returns ``None``
+        for an uncalibrated camera). The default spreads cameras along the x-axis
+        so multi-camera setups stay distinct; set ``CAMERA_POSITIONS`` for accuracy.
+        """
+        if camera_id in self._transformer._calibrations:
+            return
+
+        if not self._warned_default_calibration:
+            logger.warning(
+                "No CAMERA_POSITIONS configured; using auto-default camera "
+                "calibration. World coordinates are approximate — set "
+                "CAMERA_POSITIONS for accuracy."
+            )
+            self._warned_default_calibration = True
+
+        position = Point3D(
+            camera_id * self._default_camera_spacing, 0.0, self._default_camera_height
+        )
+        self._transformer.set_calibration(
+            CameraCalibration(
+                camera_id=camera_id,
+                position=position,
+                rotation=(0.0, 0.0, 0.0),
+                focal_length=self._default_focal_length,
+                image_center=(640.0, 360.0),
+            )
+        )
+        logger.info(
+            f"Camera {camera_id}: auto-default calibration at "
+            f"({position.x}, {position.y}, {position.z})"
+        )
+
     async def initialize(self) -> None:
         """Initialize the world model."""
         logger.info("World model initialized")
@@ -286,7 +375,10 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         for camera_id, camera_tracks in tracks.items():
             for track in camera_tracks:
                 await self._process_track(camera_id, track, now)
-        
+
+        # Feed cross-camera homography from objects co-visible this tick
+        self._collect_correspondences(now)
+
         # Clean up old objects
         self._cleanup_old_objects(now)
         
@@ -302,6 +394,10 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         timestamp: datetime
     ) -> None:
         """Process a single track update."""
+        # Ensure the camera has a calibration (auto-default if unconfigured),
+        # otherwise pixel_to_world returns None and no world object is created.
+        self._ensure_calibration(camera_id)
+
         # Estimate depth from bbox height
         bbox_height = track.bbox.height
         if bbox_height > 20:
@@ -332,8 +428,10 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             object_id = self._track_to_object[track_key]
             self._update_existing_object(object_id, track, world_pos, timestamp)
         else:
-            # Check for nearby objects (cross-camera matching)
-            existing_id = self._find_matching_object(world_pos, track.class_id)
+            # Check for nearby objects (cross-camera matching, appearance-gated)
+            existing_id = self._find_matching_object(
+                world_pos, track.class_id, track.appearance
+            )
             if existing_id:
                 self._track_to_object[track_key] = existing_id
                 self._update_existing_object(existing_id, track, world_pos, timestamp)
@@ -358,7 +456,15 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             kf = self._kalman_filters[object_id]
             dt = max(0.0, (timestamp - obj.last_update).total_seconds())
             kf.predict(dt)
-            kf.update(world_pos, confidence=track.confidence)
+            trust = self._sensor_trust.get(track.camera_id, 1.0)
+            area_factor = self._bbox_area_factor(track.bbox.area)
+            innovation = kf.update(
+                world_pos,
+                confidence=track.confidence,
+                sensor_trust=trust,
+                area_factor=area_factor,
+            )
+            self._update_sensor_trust(track.camera_id, innovation)
 
             obj.position = kf.position
             obj.velocity = kf.velocity
@@ -383,6 +489,10 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         obj.camera_pixel_positions[track.camera_id] = track.bbox.center
         obj.camera_pixel_velocities[track.camera_id] = track.velocity
         obj.camera_last_seen[track.camera_id] = timestamp
+        obj.camera_foot_points[track.camera_id] = (track.bbox.center[0], track.bbox.y2)
+
+        # EMA-smooth the appearance descriptor for re-ID stability
+        obj.appearance = self._blend_appearance(obj.appearance, track.appearance)
     
     def _create_new_object(
         self,
@@ -404,10 +514,12 @@ class WorldModelRepositoryImpl(WorldModelRepository):
             confidence=track.confidence,
             last_seen_camera=track.camera_id,
             last_update=timestamp,
+            appearance=track.appearance,
             source_tracks={track.camera_id: track.track_id},
             camera_pixel_positions={track.camera_id: track.bbox.center},
             camera_pixel_velocities={track.camera_id: track.velocity},
-            camera_last_seen={track.camera_id: timestamp}
+            camera_last_seen={track.camera_id: timestamp},
+            camera_foot_points={track.camera_id: (track.bbox.center[0], track.bbox.y2)},
         )
         
         self._world_objects[object_id] = obj
@@ -419,25 +531,81 @@ class WorldModelRepositoryImpl(WorldModelRepository):
         
         logger.debug(f"Created new world object {object_id}")
     
+    def _bbox_area_factor(self, area: float) -> float:
+        """Map a detection bbox area to a [0.1, 1.0] reliability factor: a larger
+        bbox means the person is closer, so depth is more reliable and noise lower."""
+        if self._bbox_reference_area <= 0:
+            return 1.0
+        return max(0.1, min(1.0, area / self._bbox_reference_area))
+
+    def _update_sensor_trust(self, camera_id: int, innovation: float) -> None:
+        """Nudge a camera's trust up on a consistent measurement (low innovation) and
+        down on an outlier (high innovation), clamped to [0.1, 1.0]."""
+        trust = self._sensor_trust.get(camera_id, 1.0)
+        if innovation <= self._trust_innovation_threshold:
+            trust = min(1.0, trust + self._trust_step)
+        else:
+            trust = max(0.1, trust - self._trust_step)
+        self._sensor_trust[camera_id] = trust
+
+    def get_sensor_trust(self, camera_id: int) -> float:
+        """Current trust score for a camera (defaults to 1.0 before any update)."""
+        return self._sensor_trust.get(camera_id, 1.0)
+
+    def _blend_appearance(
+        self,
+        old: Optional[AppearanceDescriptor],
+        new: Optional[AppearanceDescriptor],
+    ) -> Optional[AppearanceDescriptor]:
+        """EMA-blend two appearance descriptors (alpha weights the new observation)."""
+        if new is None:
+            return old
+        if old is None:
+            return new
+        a = self._appearance_ema_alpha
+        blended = (1.0 - a) * old.vector + a * new.vector
+        norm = float(np.linalg.norm(blended)) + 1e-6
+        return AppearanceDescriptor(vector=(blended / norm).astype(np.float32))
+
     def _find_matching_object(
         self,
         world_pos: Point3D,
-        class_id: int
+        class_id: int,
+        appearance: Optional[AppearanceDescriptor] = None,
     ) -> Optional[int]:
-        """Find existing object that matches position."""
+        """Find an existing world object matching this observation.
+
+        Candidates must share the class and lie within ``distance_threshold`` metres.
+        When both the candidate and the observation carry an appearance descriptor,
+        a cosine similarity below ``_appearance_match_threshold`` rejects the match —
+        so two differently-dressed people at the same spot stay separate. With no
+        appearance available it falls back to nearest-within-threshold.
+        """
+        distance_threshold = 2.0  # metres
         best_match = None
-        min_distance = float('inf')
-        threshold = 2.0  # meters
-        
+        best_score = -1.0
+
         for obj_id, obj in self._world_objects.items():
             if obj.class_id != class_id:
                 continue
-            
+
             distance = obj.position.distance_to(world_pos)
-            if distance < min_distance and distance < threshold:
-                min_distance = distance
+            if distance >= distance_threshold:
+                continue
+
+            if appearance is not None and obj.appearance is not None:
+                similarity = obj.appearance.cosine_similarity(appearance)
+                if similarity < self._appearance_match_threshold:
+                    continue
+                score = similarity
+            else:
+                # No appearance to compare — prefer the closest candidate.
+                score = 1.0 - (distance / distance_threshold)
+
+            if score > best_score:
+                best_score = score
                 best_match = obj_id
-        
+
         return best_match
     
     def _cleanup_old_objects(self, current_time: datetime) -> None:
@@ -464,22 +632,152 @@ class WorldModelRepositoryImpl(WorldModelRepository):
     def get_world_objects(self) -> List[WorldObject]:
         """Get all current world objects."""
         return list(self._world_objects.values())
-    
+
+    def _collect_correspondences(self, now: datetime) -> None:
+        """Feed foot-point correspondences for objects co-visible on this tick.
+
+        An object seen by two cameras at the same instant gives one matched
+        ground-plane point per camera pair, which the homography estimator uses
+        to self-calibrate the camera-to-camera transform.
+        """
+        for obj in self._world_objects.values():
+            cams = [
+                c for c, seen in obj.camera_last_seen.items()
+                if seen == now and c in obj.camera_foot_points
+            ]
+            if len(cams) < 2:
+                continue
+            for src in cams:
+                for dst in cams:
+                    if src == dst:
+                        continue
+                    self._homography.add_correspondence(
+                        src, dst,
+                        obj.camera_foot_points[src],
+                        obj.camera_foot_points[dst],
+                    )
+
+    def _try_homography_prediction(
+        self, camera_id: int, obj: WorldObject, time_since_seen: float
+    ) -> Optional[PredictedTarget]:
+        """Project ``obj``'s foot point from a source camera into ``camera_id`` via
+        a learned homography. Returns a HOMOGRAPHY prediction, or None if no usable
+        homography/foot-point exists (caller then falls back to world projection)."""
+        for src_cam in self._homography.source_cameras_for(camera_id):
+            foot = obj.camera_foot_points.get(src_cam)
+            if foot is None:
+                continue
+            projected = self._homography.project(src_cam, camera_id, foot)
+            if projected is None:
+                continue
+
+            depth = max(abs(obj.position.z), 0.5)
+            bbox_height = min(500, max(50, 500 / depth))
+            bbox_width = bbox_height * 0.4
+            fx, fy = projected
+            try:
+                # Foot point is the bottom-centre; the body extends upward.
+                bbox = BoundingBox(fx - bbox_width / 2, fy - bbox_height, fx + bbox_width / 2, fy)
+            except ValueError:
+                continue
+
+            confidence = obj.confidence * max(
+                0.1, 1.0 - time_since_seen / self._prediction_horizon
+            )
+            return PredictedTarget(
+                object_id=obj.object_id,
+                camera_id=camera_id,
+                predicted_bbox=bbox,
+                confidence=confidence,
+                time_since_seen=time_since_seen,
+                velocity_projection=(obj.velocity.vx, obj.velocity.vy),
+                source_camera=src_cam,
+                prediction_method=PredictionMethod.HOMOGRAPHY,
+            )
+        return None
+
+    def _try_extrapolation_prediction(
+        self, camera_id: int, obj: WorldObject, time_since_seen: float
+    ) -> Optional[PredictedTarget]:
+        """Dead-reckon a ghost from this camera's last-known pixel position, sliding it
+        along the per-camera pixel velocity with an adaptive budget. Returns None when
+        this camera has no pixel history for the object (so the caller falls through)."""
+        last_pixel = obj.camera_pixel_positions.get(camera_id)
+        if last_pixel is None:
+            return None
+
+        vx, vy = obj.camera_pixel_velocities.get(camera_id, (0.0, 0.0))
+        speed = (vx * vx + vy * vy) ** 0.5
+        budget = min(250.0, 80.0 + 40.0 * time_since_seen)
+        if speed < 1e-6:
+            cx, cy = last_pixel
+        else:
+            disp = min(budget, speed * time_since_seen * self._extrap_fps)
+            cx = last_pixel[0] + (vx / speed) * disp
+            cy = last_pixel[1] + (vy / speed) * disp
+
+        depth = max(abs(obj.position.z), 0.5)
+        bbox_height = min(500, max(50, 500 / depth))
+        bbox_width = bbox_height * 0.4
+        try:
+            bbox = BoundingBox(
+                cx - bbox_width / 2, cy - bbox_height / 2,
+                cx + bbox_width / 2, cy + bbox_height / 2,
+            )
+        except ValueError:
+            return None
+
+        confidence = obj.confidence * max(
+            0.1, 1.0 - time_since_seen / self._prediction_horizon
+        )
+        return PredictedTarget(
+            object_id=obj.object_id,
+            camera_id=camera_id,
+            predicted_bbox=bbox,
+            confidence=confidence,
+            time_since_seen=time_since_seen,
+            velocity_projection=(vx, vy),
+            source_camera=camera_id,
+            prediction_method=PredictionMethod.EXTRAPOLATION,
+        )
+
     def generate_predictions(self, camera_id: int) -> List[PredictedTarget]:
         """Generate predictions for a camera view."""
+        # A view-only camera still needs a calibration to project world objects.
+        self._ensure_calibration(camera_id)
+
         predictions = []
         now = datetime.now()
         
         for obj in self._world_objects.values():
-            # Skip if already seen by this camera
-            if camera_id in obj.source_tracks:
+            # Skip objects this camera is tracking live (seen within the live window).
+            last_seen_here = obj.camera_last_seen.get(camera_id)
+            if last_seen_here is not None and \
+                    (now - last_seen_here).total_seconds() < self._live_track_seconds:
                 continue
-            
+
             time_since_seen = (now - obj.last_update).total_seconds()
             if time_since_seen > self._prediction_horizon:
                 continue
-            
-            # Try world-to-pixel projection
+
+            # Path A: cross-camera homography (green H-PROJ) — most accurate.
+            homography_pred = self._try_homography_prediction(
+                camera_id, obj, time_since_seen
+            )
+            if homography_pred is not None:
+                predictions.append(homography_pred)
+                continue
+
+            # Path B: pixel extrapolation (red EXTRAP) — dead-reckon from this camera's
+            # own last-known pixel position. Only fires if it saw the object before.
+            extrap_pred = self._try_extrapolation_prediction(
+                camera_id, obj, time_since_seen
+            )
+            if extrap_pred is not None:
+                predictions.append(extrap_pred)
+                continue
+
+            # Path C: world-to-pixel projection (orange WORLD) — always-available fallback.
             pixel = self._transformer.world_to_pixel(camera_id, obj.position)
             
             if pixel is None:
@@ -523,3 +821,58 @@ class WorldModelRepositoryImpl(WorldModelRepository):
     def get_camera_calibration(self, camera_id: int) -> Optional[CameraCalibration]:
         """Get calibration for a camera."""
         return self._transformer._calibrations.get(camera_id)
+
+    def update_camera_sensor(
+        self,
+        camera_id: int,
+        gps: Optional[Dict[str, Any]] = None,
+        orientation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Fuse mobile GPS/IMU into ``camera_id``'s calibration.
+
+        GPS -> local position (equirectangular projection); DeviceOrientation
+        (alpha/beta/gamma degrees) -> camera rotation (roll, pitch, yaw radians).
+        Overrides the auto-default calibration for that camera. Missing fields are
+        kept from any existing calibration.
+        """
+        position: Optional[Point3D] = None
+        if gps:
+            lat, lng = gps.get("latitude"), gps.get("longitude")
+            if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                if self._gps_ref is None:
+                    self._gps_ref = (float(lat), float(lng))  # first fix = local origin
+                x, y = gps_to_local(
+                    float(lat), float(lng), self._gps_ref[0], self._gps_ref[1]
+                )
+                alt = gps.get("altitude")
+                z = float(alt) if isinstance(alt, (int, float)) else self._default_camera_height
+                position = Point3D(x, y, z)
+
+        rotation: Optional[Tuple[float, float, float]] = None
+        if orientation:
+            alpha = orientation.get("alpha") or 0.0  # compass heading -> yaw
+            beta = orientation.get("beta") or 0.0    # front-back tilt -> pitch
+            gamma = orientation.get("gamma") or 0.0  # left-right tilt  -> roll
+            rotation = (
+                math.radians(float(gamma)),
+                math.radians(float(beta)),
+                math.radians(float(alpha)),
+            )
+
+        if position is None and rotation is None:
+            return
+
+        existing = self._transformer._calibrations.get(camera_id)
+        accuracy = gps.get("accuracy") if gps else None
+        self._transformer.set_calibration(CameraCalibration(
+            camera_id=camera_id,
+            position=position or (
+                existing.position if existing
+                else Point3D(0.0, 0.0, self._default_camera_height)
+            ),
+            rotation=rotation or (existing.rotation if existing else (0.0, 0.0, 0.0)),
+            focal_length=existing.focal_length if existing else self._default_focal_length,
+            image_center=existing.image_center if existing else (640.0, 360.0),
+            gps_accuracy=float(accuracy) if isinstance(accuracy, (int, float)) else 5.0,
+        ))
+        logger.info(f"Camera {camera_id}: calibration updated from GPS/IMU sensor data")

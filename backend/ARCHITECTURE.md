@@ -99,10 +99,13 @@ CAM_0_URL=0  # Local camera device
 CAM_1_URL=http://192.168.1.100:8080/video
 ```
 
-**Camera Positions** (required for world coordinates):
+**Camera Positions** (recommended for accurate world coordinates; auto-defaulted if omitted):
 ```env
 CAMERA_POSITIONS=[[0, 0, 2], [5, 0, 2], [0, 5, 2]]
 ```
+> If omitted, the world model synthesizes a default calibration per camera (spread along
+> the x-axis) so it still produces world objects out of the box, logging a one-time warning.
+> Set real positions for accurate cross-camera coordinates.
 
 ## Running
 

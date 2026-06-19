@@ -23,6 +23,34 @@ from app.domain.entities import (
 logger = logging.getLogger(__name__)
 
 
+def compute_hsv_appearance(
+    frame: NDArray[np.uint8], bbox: BoundingBox
+) -> Optional[AppearanceDescriptor]:
+    """Compute a 64-dim L2-normalized HSV histogram descriptor for a bbox crop.
+
+    32 hue + 16 saturation + 16 value bins. Returns ``None`` for an out-of-bounds
+    or degenerate crop. ~0.1 ms per call. Used for cross-camera re-identification.
+    """
+    try:
+        x1, y1, x2, y2 = int(bbox.x1), int(bbox.y1), int(bbox.x2), int(bbox.y2)
+        h, w = frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        crop = frame[y1:y2, x1:x2]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        hist_h = cv2.calcHist([hsv], [0], None, [32], [0, 180]).flatten()
+        hist_s = cv2.calcHist([hsv], [1], None, [16], [0, 256]).flatten()
+        hist_v = cv2.calcHist([hsv], [2], None, [16], [0, 256]).flatten()
+        feature = np.concatenate([hist_h, hist_s, hist_v])
+        norm = float(np.linalg.norm(feature)) + 1e-6
+        return AppearanceDescriptor(vector=(feature / norm).astype(np.float32))
+    except Exception as e:
+        logger.error(f"Appearance computation error: {e}")
+        return None
+
+
 class YOLODetector:
     """YOLOv8 detector with proper error handling."""
     
@@ -36,6 +64,7 @@ class YOLODetector:
         self._iou_threshold = config_repo.get_float("iou_threshold", 0.45)
         self._max_detections = config_repo.get_int("max_detections", 100)
         self._detection_classes = config_repo.get_list("detection_classes", [0])
+        self._appearance_enabled = config_repo.get_bool("appearance_reid_enabled", True)
         self._is_initialized = False
         
         # Try to import ultralytics
@@ -167,6 +196,12 @@ class YOLODetector:
                                 confidence=float(person_kp[j, 2])
                             ))
                     
+                    # Cross-camera re-ID descriptor (HSV histogram of the crop)
+                    appearance = (
+                        compute_hsv_appearance(frame, bbox)
+                        if self._appearance_enabled else None
+                    )
+
                     detection = Detection(
                         detection_id=f"det_{timestamp.timestamp()}_{idx}_{id(boxes)}",
                         camera_id=-1,  # Will be set by caller
@@ -175,7 +210,8 @@ class YOLODetector:
                         class_id=int(cls_id),
                         class_name=self._model.names.get(cls_id, 'unknown'),
                         timestamp=timestamp,
-                        keypoints=keypoints
+                        keypoints=keypoints,
+                        appearance=appearance,
                     )
                     
                     detections.append(detection)
@@ -251,32 +287,5 @@ class DetectionRepositoryImpl(DetectionRepository):
         frame: NDArray[np.uint8],
         bbox: BoundingBox
     ) -> Optional[AppearanceDescriptor]:
-        """Compute HSV histogram appearance descriptor."""
-        try:
-            x1, y1, x2, y2 = int(bbox.x1), int(bbox.y1), int(bbox.x2), int(bbox.y2)
-            h, w = frame.shape[:2]
-            
-            # Clamp to frame bounds
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            
-            if x2 <= x1 or y2 <= y1:
-                return None
-            
-            crop = frame[y1:y2, x1:x2]
-            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            
-            # 32 hue + 16 sat + 16 val = 64-dim histogram
-            hist_h = cv2.calcHist([hsv], [0], None, [32], [0, 180]).flatten()
-            hist_s = cv2.calcHist([hsv], [1], None, [16], [0, 256]).flatten()
-            hist_v = cv2.calcHist([hsv], [2], None, [16], [0, 256]).flatten()
-            
-            feature = np.concatenate([hist_h, hist_s, hist_v])
-            norm = np.linalg.norm(feature) + 1e-6
-            normalized = (feature / norm).astype(np.float32)
-            
-            return AppearanceDescriptor(vector=normalized)
-            
-        except Exception as e:
-            logger.error(f"Appearance computation error: {e}")
-            return None
+        """Compute an HSV histogram appearance descriptor (module-level helper)."""
+        return compute_hsv_appearance(frame, bbox)

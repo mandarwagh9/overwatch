@@ -82,6 +82,38 @@ The system runs a **singleton perception pipeline**: detection, tracking, and fu
 
 ---
 
+## ✅ Implementation status
+
+OVERWATCH ships a working perception core today. Several headline capabilities are
+**designed and on the roadmap but not yet wired into the live pipeline** — this table is
+the source of truth. Rows marked 🔭 are *planned*, not implemented; the sections below
+that describe them are forward-looking design.
+
+| Capability | Status |
+|---|---|
+| YOLOv8 person detection (TensorRT / ONNX / PyTorch) | ✅ Implemented |
+| Per-camera Hungarian / IoU tracking | ✅ Implemented |
+| 6-state Kalman world fusion (confidence-adaptive) | ✅ Implemented |
+| Cross-camera merge by world-space distance | ✅ Implemented |
+| World-projection ghost predictions (orange `WORLD`) | ✅ Implemented |
+| msgpack zero-copy WebSocket broadcast | ✅ Implemented |
+| Canvas tactical HUD (brackets, diamonds, velocity, ghosts) | ✅ Implemented |
+| Mobile phone camera source + standalone page | ✅ Implemented |
+| Optional JWT auth · SSL · atomic Jetson deploy | ✅ Implemented |
+| Cross-camera homography ghosts (green `H-PROJ`) | ✅ Implemented |
+| Pixel-extrapolation ghosts (red `EXTRAP`) | ✅ Implemented |
+| Appearance re-ID (HSV histograms) wired into tracking / fusion | ✅ Implemented |
+| Sensor-trust scoring | ✅ Implemented |
+| Adaptive Kalman noise by bbox area | ✅ Implemented |
+| GPS + IMU fusion into the world model | ✅ Implemented |
+| DeepSORT / centroid tracker fallback chain | 🔭 Planned |
+
+> The remaining 🔭 items (DeepSORT/centroid fallback chain, compass ribbon, threat ring)
+> are deferred — they're not blockers for the core perception pipeline. The roadmap and
+> build order are tracked in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+
+---
+
 ## 🚀 Features
 
 ### Core perception
@@ -90,13 +122,13 @@ The system runs a **singleton perception pipeline**: detection, tracking, and fu
 |---|---|
 | **Person detection** | YOLOv8n with NMS-level class filter (`classes=[0]`) — person-only |
 | **TensorRT FP16** | `.engine` export on Jetson — ~8 MiB, sub-10 ms inference |
-| **Hungarian tracking** | `scipy.optimize.linear_sum_assignment` — `0.6 × IoU + 0.4 × cosine appearance` cost |
-| **Tracker fallback chain** | DeepSORT (MobileNet) → Hungarian (scipy) → Centroid |
-| **Adaptive Kalman filter** | 6-state `[x, y, z, vx, vy, vz]` — measurement noise scales by confidence, bbox area, sensor trust |
-| **Cross-camera re-ID** | 64-dim HSV histogram descriptors, L2-normalized, EMA-smoothed (α = 0.3) |
-| **Sensor trust scoring** | Per-sensor trust ∈ [0.1, 1.0] — increases for consistent measurements, decays for innovation outliers |
-| **Cross-camera homography** | Self-calibrating ground-plane H from shared foot-point observations via `cv2.findHomography` + RANSAC |
-| **3-path ghost predictions** | (A) homography projection from any source camera (green), (B) pixel extrapolation with adaptive budget (red), (C) world-coordinate pinhole projection fallback (orange) |
+| **Hungarian tracking** | `scipy.optimize.linear_sum_assignment` — cost `0.6 × IoU + 0.4 × cosine appearance`; appearance descriptors are now computed per detection, so the appearance term is active |
+| **Tracker fallback chain** 🔭 | *Planned* — only Hungarian (with a greedy fallback) is active today; DeepSORT/Centroid are not implemented |
+| **Adaptive Kalman filter** | 6-state `[x, y, z, vx, vy, vz]` — measurement noise scales by confidence, bbox area, and sensor trust |
+| **Cross-camera re-ID** | 64-dim HSV histogram descriptors, L2-normalized, EMA-smoothed (α = 0.3); computed per detection and used to gate cross-camera association |
+| **Sensor trust scoring** | Per-sensor trust ∈ [0.1, 1.0] — rises on consistent measurements, decays on innovation outliers; scales Kalman measurement noise |
+| **Cross-camera homography** | Self-calibrating ground-plane H from shared foot-point observations via `cv2.findHomography` + RANSAC; projects Path-A green `H-PROJ` ghosts |
+| **Ghost predictions** | All three paths active — Path A (homography/green `H-PROJ`), Path B (pixel extrapolation/red `EXTRAP`), Path C (world projection/orange `WORLD`) |
 
 ### Platform
 
@@ -104,7 +136,7 @@ The system runs a **singleton perception pipeline**: detection, tracking, and fu
 |---|---|
 | **Multi-camera** | Up to 4 concurrent streams (physical MJPEG/RTSP + mobile virtual cameras) |
 | **Mobile streaming** | Phone browsers → `getUserMedia` → binary JPEG over WebSocket → `VirtualCamera` |
-| **GPS + IMU fusion** | Mobile geolocation → equirectangular projection; `DeviceOrientationEvent` → camera rotation |
+| **GPS + IMU fusion** | Mobile geolocation (`watchPosition`) → equirectangular projection into the local frame; `DeviceOrientationEvent` → camera rotation. Fused into the camera calibration (`GPS_REFERENCE_*` or first-fix origin) |
 | **AR overlays** | Canvas-based: cyan detection brackets, amber track boxes, green/orange/red ghost predictions |
 | **Binary protocol** | msgpack-serialized snapshots — zero-copy broadcast to all viewers |
 | **SSL/TLS** | Self-signed certificates with SAN for LAN IP access (required for `getUserMedia`) |
@@ -320,13 +352,21 @@ python scripts/check_status.py
 
 ## 🧪 Testing
 
-The backend has 57 unit tests covering domain primitives, Kalman filtering, coordinate transforms, tracking, and configuration. CI runs them on every push and PR.
+**Backend** — 57 unit tests covering domain primitives, Kalman filtering, coordinate transforms, tracking, and configuration:
 
 ```bash
 python -m pytest backend/tests/unit -v
 ```
 
-Tests are pure-Python and do not require CUDA, ultralytics, or torch. They use `pytest.importorskip("cv2")` where OpenCV is needed.
+Tests are pure-Python and do not require CUDA, ultralytics, or torch (heavy deps are import-skipped).
+
+**Frontend** — Jest + React Testing Library smoke tests for domain helpers and components:
+
+```bash
+cd frontend && npm run test:ci
+```
+
+**CI** runs the full gate on every push and PR — a backend job (`ruff` + `mypy` + `pytest` with a coverage floor) and a frontend job (`jest`/RTL + `eslint` via the production build).
 
 ---
 
@@ -357,9 +397,9 @@ When `AUTH_ENABLED=true`, both endpoints require a `?token=<jwt>` query paramete
 
 ```
 Client → { "type": "register", "role": "camera_source", "camera_id": null }
-Server → { "type": "registered", "camera_id": 0, "target_fps": 15 }
-Client → [binary JPEG frames at target FPS]
-Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }
+Server → { "type": "registered", "camera_id": 0 }
+Client → [binary JPEG frames]
+Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }   # fused into camera calibration
 ```
 
 ---
@@ -419,19 +459,19 @@ Client → { "type": "sensor_data", "gps": {...}, "orientation": {...} }
 
 ## 🎯 AR overlay system — EagleEye-inspired tactical HUD
 
-The frontend renders a tactical HUD inspired by Anduril's EagleEye UI — diamond IFF markers, compass ribbon, threat rings — implemented entirely in HTML5 Canvas. (Visual style only; rendered from open code, no Anduril assets used.)
+The frontend renders a tactical HUD inspired by Anduril's EagleEye UI, implemented entirely in HTML5 Canvas — corner brackets, diamond IFF markers, velocity vectors, ghost chevrons, and HUD corner ticks. (Compass ribbon and threat ring are 🔭 planned, not in the current renderer. Visual style only; rendered from open code, no Anduril assets used.)
 
 | Layer | Color | Elements |
 |---|---|---|
 | **Detections** | Slate-blue `#64b5f6` | Diamond markers, corner brackets, `PERSON` confidence pill |
 | **Tracks** | Amber `#ffd740` | Diamond/chevron markers, velocity vector arrows, track ID callouts |
-| **Predictions (H-PROJ)** | Green `#00ff82` solid | Homography-projected ghost — accurate, real-time cross-camera |
-| **Predictions (EXTRAP)** | Red `#ff5050` dashed | Pixel-extrapolated ghost — time-decaying dead-reckoning |
-| **Predictions (WORLD)** | Orange `#ff9800` dashed | World-coordinate projection — pinhole-model fallback |
-| **Compass ribbon** | — | Heading ribbon with N/E/S/W and bearing tick marks |
-| **Threat ring** | Per-IFF color | Inner ring around feed showing bearing to off-screen predictions |
+| **Predictions (H-PROJ)** | Green `#00ff82` solid | ✅ Active — homography-projected ghost; emitted once a camera-pair homography has been learned |
+| **Predictions (EXTRAP)** | Red `#ff5050` dashed | ✅ Active — pixel-extrapolated dead-reckoning when a camera loses a previously-seen target |
+| **Predictions (WORLD)** | Orange `#ff9800` dashed | ✅ Active — world-coordinate pinhole projection; the only ghost path emitted today |
+| **Compass ribbon** 🔭 | — | *Planned* — not in the current canvas renderer |
+| **Threat ring** 🔭 | Per-IFF color | *Planned* — not in the current canvas renderer |
 
-Detection overlays show what the model sees *right now*. Track overlays show persistent identity across frames. Predictions show cross-camera projections — green for homography (most accurate), orange for world-model fallback (rough but always available), red for pixel extrapolation (last resort).
+Detection overlays show what the model sees *right now*. Track overlays show persistent identity across frames. Predictions show cross-camera projections — green `H-PROJ` (homography, most accurate), orange `WORLD` (world-model fallback), and red `EXTRAP` (pixel extrapolation, when a camera has lost a previously-seen target) are all emitted.
 
 ---
 
@@ -446,25 +486,34 @@ Each fused world object maintains a 6-state Kalman filter `[x, y, z, vx, vy, vz]
 Objects from different cameras are matched when:
 - Euclidean distance < 2 m
 - Same `class_id`
-- Appearance cosine similarity > 0.5 (when feature vectors available)
+- Appearance cosine similarity ≥ 0.5 when both observations carry a descriptor (differently-dressed people at the same ground position stay separate)
 
 ### Sensor trust
 
 Each camera/sensor earns trust through consistency:
-- **Consistent measurements** → trust increases (capped at 1.0)
+- **Consistent measurements** (low Kalman innovation) → trust increases (capped at 1.0)
 - **Innovation outliers** → trust decays (floored at 0.1)
+
+Trust scales the Kalman measurement noise, so flaky sensors are automatically down-weighted.
 
 ### Appearance re-ID
 
 - 64-dimensional HSV histogram descriptors computed per detection (~0.1 ms each)
 - L2-normalized for cosine similarity
-- Exponential moving average (α = 0.3) for descriptor stability across frames
+- Exponential moving average (α = 0.3) on the fused world object for descriptor stability
+
+Used to gate cross-camera association: two people at the same ground position but with
+different appearance are kept as distinct world objects.
 
 ---
 
 ## 📐 Cross-camera homography — how it works
 
-The signature feature is **ghost prediction**: when Camera 0 can't see a person but Camera 1 can, the system renders a ghost overlay on Camera 0's feed showing where that person is.
+> **Status: implemented** (`app/infrastructure/homography.py`). The estimator self-calibrates
+> from foot-point correspondences and projects Path-A green `H-PROJ` ghosts, falling back to
+> Path C (world projection) when no homography has been learned for a camera pair yet.
+
+The signature feature is **homography ghost prediction**: when Camera 0 can't see a person but Camera 1 can, the system renders a ghost overlay on Camera 0's feed showing where that person is.
 
 ### The problem with naive extrapolation
 
@@ -525,6 +574,9 @@ The mobile client:
 ## ⚠️ Edge cases & known limitations
 
 ### Cross-camera prediction
+
+> All three prediction paths — Path A (homography), Path B (pixel extrapolation), and
+> Path C (world projection) — are active. See the [Implementation status](#-implementation-status) table.
 
 | Edge case | Behavior | Mitigation |
 |---|---|---|
