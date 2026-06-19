@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "overwatch"
 version = "2.0.0"
 description = "Multi-camera perception and tracking system"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10,<3.14"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
