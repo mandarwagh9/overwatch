@@ -11,7 +11,7 @@ import './CameraDisplay.css';
 /**
  * Get IFF color based on detection/track/prediction type
  */
-function getIFFColor(item, isPrediction = false) {
+export function getIFFColor(item, isPrediction = false) {
   if (isPrediction) {
     const method = item.prediction_method || (item.homography_source ? 'HOMOGRAPHY' : 'EXTRAP');
     if (method === 'HOMOGRAPHY') return IFF_COLORS.PROJECTED;
@@ -24,7 +24,7 @@ function getIFFColor(item, isPrediction = false) {
 /**
  * Estimate distance from bbox height
  */
-function estimateDistance(bboxHeight) {
+export function estimateDistance(bboxHeight) {
   const personHeight = getConfig('display.personHeightMeters', 1.7);
   const refPixels = getConfig('display.referencePixelsAt1M', 520);
   
