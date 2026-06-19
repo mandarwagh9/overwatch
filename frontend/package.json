@@ -18,8 +18,23 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "test:ci": "react-scripts test --watchAll=false",
+    "test:ci": "react-scripts test --watchAll=false --coverage",
     "eject": "react-scripts eject"
+  },
+  "jest": {
+    "collectCoverageFrom": [
+      "src/config/index.js",
+      "src/domain/entities.js",
+      "src/infrastructure/apiAdapter.js"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "statements": 65,
+        "branches": 55,
+        "functions": 40,
+        "lines": 65
+      }
+    }
   },
   "eslintConfig": {
     "extends": [
